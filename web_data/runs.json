@@ -144,7 +144,21 @@
       "radar_2km",
       "echotops_18",
       "echotops_45",
-      "lightning"
+      "lightning",
+      "wind_925hpa",
+      "temp_925hpa",
+      "wind_850hpa",
+      "temp_850hpa",
+      "wind_700hpa",
+      "temp_700hpa",
+      "wind_500hpa",
+      "temp_500hpa",
+      "wind_400hpa",
+      "temp_400hpa",
+      "wind_300hpa",
+      "temp_300hpa",
+      "wind_200hpa",
+      "temp_200hpa"
     ]
   }
 ]
