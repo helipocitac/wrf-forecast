@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WRF Simulation - Forecast</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background-color: #0b0f19; color: #e2e8f0; display: flex; flex-direction: column; align-items: center; min-height: 100vh; padding: 20px; }
+        
+        .container { width: 100%; max-width: 1100px; display: flex; flex-direction: column; gap: 15px; }
+        
+        /* Top Bar */
+        .header { display: flex; justify-content: space-between; align-items: center; background: #161e2e; padding: 12px 20px; border-radius: 8px; border: 1px solid #243044; }
+        .title { font-size: 1.2rem; font-weight: bold; color: #60a5fa; display: flex; align-items: center; gap: 10px; }
+        .badge { background: #2563eb; color: #fff; font-size: 0.75rem; padding: 2px 8px; border-radius: 12px; }
+        
+        /* Navigation Controls */
+        .controls-panel { background: #161e2e; padding: 15px; border-radius: 8px; border: 1px solid #243044; display: flex; flex-direction: column; gap: 12px; }
+        .nav-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        
+        button { background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: 0.2s; }
+        button:hover { background: #334155; color: #fff; }
+        button.active { background: #2563eb; color: #fff; border-color: #3b82f6; }
+        
+        /* Slider section */
+        .slider-row { display: flex; align-items: center; gap: 15px; background: #0f172a; padding: 10px 15px; border-radius: 6px; }
+        .time-display { font-family: monospace; font-size: 1rem; color: #38bdf8; min-width: 170px; font-weight: bold; }
+        input[type=range] { flex: 1; accent-color: #38bdf8; cursor: pointer; }
+        
+        /* Viewer Box */
+        .viewer { display: flex; justify-content: center; align-items: center; background: #0f172a; border-radius: 8px; border: 1px solid #243044; overflow: hidden; min-height: 400px; padding: 10px; }
+        .viewer img { max-width: 100%; height: auto; border-radius: 4px; display: block; }
+        
+        /* Archive Overlay/Tab */
+        .archive-list { display: none; background: #161e2e; padding: 15px; border-radius: 8px; border: 1px solid #243044; margin-top: 10px; }
+        .archive-item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #243044; cursor: pointer; }
+        .archive-item:hover { background: #1e293b; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <div class="title">
+            WRF Simulation <span class="badge" id="model-name">ARW v4</span>
+        </div>
+        <div>
+            <button id="tab-sim" class="active" onclick="showTab('sim')">Simulace</button>
+            <button id="tab-arch" onclick="showTab('arch')">Archiv</button>
+        </div>
+    </div>
+
+    <!-- MAIN SIMULATION VIEW -->
+    <div id="view-sim">
+        <div class="controls-panel">
+            <!-- Fields -->
+            <div class="nav-row" id="field-buttons">
+                <!-- Dynamicky doplňovaná tlačítka veličin -->
+            </div>
+            
+            <!-- Playback & Slider -->
+            <div class="slider-row">
+                <button id="play-btn" onclick="togglePlay()">Play ▶</button>
+                <button onclick="step(-1)">❮</button>
+                <button onclick="step(1)">❯</button>
+                <input type="range" id="time-slider" min="0" value="0" oninput="onSliderMove(this.value)">
+                <div class="time-display" id="time-text">--:-- UTC</div>
+            </div>
+        </div>
+
+        <div class="viewer" style="margin-top: 15px;">
+            <img id="map-img" src="" alt="WRF Output">
+        </div>
+    </div>
+
+    <!-- ARCHIVE VIEW -->
+    <div id="view-arch" class="archive-list">
+        <h3>Dostupné simulace</h3>
+        <div id="archive-items" style="margin-top: 10px;"></div>
+    </div>
+</div>
+
+<script>
+    let currentData = null;
+    let currentRun = null;
+    let currentField = 'cape';
+    let currentStep = 0;
+    let isPlaying = false;
+    let playInterval = null;
+
+    // Načtení metadat
+    async function init() {
+        try {
+            const res = await fetch('web_data/runs.json');
+            currentData = await res.json();
+            
+            if (currentData.length > 0) {
+                renderArchive();
+                loadRun(currentData[0].run_id);
+            }
+        } catch (e) {
+            console.error("Chyba při načítání runs.json:", e);
+        }
+    }
+
+    function loadRun(runId) {
+        currentRun = currentData.find(r => r.run_id === runId);
+        document.getElementById('model-name').innerText = currentRun.model;
+        
+        // Nastavení polí
+        const fieldsBox = document.getElementById('field-buttons');
+        fieldsBox.innerHTML = '';
+        currentRun.fields.forEach(f => {
+            const btn = document.createElement('button');
+            btn.innerText = f.toUpperCase();
+            btn.className = (f === currentField) ? 'active' : '';
+            btn.onclick = () => setField(f);
+            fieldsBox.appendChild(btn);
+        });
+
+        // Nastavení slideru
+        const slider = document.getElementById('time-slider');
+        slider.max = currentRun.total_steps - 1;
+        slider.value = 0;
+        
+        currentStep = 0;
+        updateImage();
+        preloadImages();
+    }
+
+    function setField(field) {
+        currentField = field;
+        document.querySelectorAll('#field-buttons button').forEach(b => {
+            b.classList.toggle('active', b.innerText.toLowerCase() === field);
+        });
+        updateImage();
+        preloadImages();
+    }
+
+    function updateImage() {
+        const stepFormatted = String(currentStep).padStart(3, '0');
+        const imgPath = `web_data/${currentRun.run_id}/${currentField}/${stepFormatted}.webp`;
+        
+        document.getElementById('map-img').src = imgPath;
+        document.getElementById('time-text').innerText = currentRun.time_steps[currentStep];
+        document.getElementById('time-slider').value = currentStep;
+    }
+
+    function onSliderMove(val) {
+        currentStep = parseInt(val);
+        updateImage();
+    }
+
+    function step(dir) {
+        currentStep = (currentStep + dir + currentRun.total_steps) % currentRun.total_steps;
+        updateImage();
+    }
+
+    function togglePlay() {
+        isPlaying = !isPlaying;
+        const btn = document.getElementById('play-btn');
+        if (isPlaying) {
+            btn.innerText = 'Pause ❚❚';
+            playInterval = setInterval(() => step(1), 150);
+        } else {
+            btn.innerText = 'Play ▶';
+            clearInterval(playInterval);
+        }
+    }
+
+    function preloadImages() {
+        for (let i = 0; i < currentRun.total_steps; i++) {
+            const img = new Image();
+            const stepFormatted = String(i).padStart(3, '0');
+            img.src = `web_data/${currentRun.run_id}/${currentField}/${stepFormatted}.webp`;
+        }
+    }
+
+    function showTab(tab) {
+        document.getElementById('view-sim').style.display = tab === 'sim' ? 'block' : 'none';
+        document.getElementById('view-arch').style.display = tab === 'arch' ? 'block' : 'none';
+        document.getElementById('tab-sim').className = tab === 'sim' ? 'active' : '';
+        document.getElementById('tab-arch').className = tab === 'arch' ? 'active' : '';
+    }
+
+    function renderArchive() {
+        const box = document.getElementById('archive-items');
+        box.innerHTML = '';
+        currentData.forEach(r => {
+            const item = document.createElement('div');
+            item.className = 'archive-item';
+            item.innerHTML = `
+                <div><strong>${r.run_id}</strong> (${r.init_time} - ${r.end_time})</div>
+                <div>Max CAPE: <b>${r.max_cape} J/kg</b></div>
+            `;
+            item.onclick = () => {
+                loadRun(r.run_id);
+                showTab('sim');
+            };
+            box.appendChild(item);
+        });
+    }
+
+    init();
+</script>
+</body>
+</html>
