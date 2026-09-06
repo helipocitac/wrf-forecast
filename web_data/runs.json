@@ -5,7 +5,7 @@
     "init_time": "2026-07-14 00:00",
     "end_time": "2026-07-15 06:00",
     "total_steps": 121,
-    "max_cape": 2045.1,
+    "max_cape": 0.0,
     "time_steps": [
       "2026-07-14 00:00",
       "2026-07-14 00:15",
@@ -130,10 +130,12 @@
       "2026-07-15 06:00"
     ],
     "fields": [
-      "cape",
-      "cin",
-      "temp",
-      "radar"
+      "shear_0_1km",
+      "shear_0_3km",
+      "shear_0_6km",
+      "echotops_18",
+      "echotops_45",
+      "lightning"
     ]
   }
 ]

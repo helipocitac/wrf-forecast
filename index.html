@@ -8,7 +8,13 @@
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
         body { background-color: #0b0f19; color: #e2e8f0; display: flex; flex-direction: column; align-items: center; min-height: 100vh; padding: 20px; }
         
-        .container { width: 100%; max-width: 1100px; display: flex; flex-direction: column; gap: 15px; }
+        .container { 
+        width: 100%; 
+        max-width: 1500px; /* Zvětšeno z 1100px na 1500px */
+        display: flex; 
+        flex-direction: column; 
+        gap: 15px; 
+        }
         
         /* Top Bar */
         .header { display: flex; justify-content: space-between; align-items: center; background: #161e2e; padding: 12px 20px; border-radius: 8px; border: 1px solid #243044; }
@@ -30,7 +36,12 @@
         
         /* Viewer Box */
         .viewer { display: flex; justify-content: center; align-items: center; background: #0f172a; border-radius: 8px; border: 1px solid #243044; overflow: hidden; min-height: 400px; padding: 10px; }
-        .viewer img { max-width: 100%; height: auto; border-radius: 4px; display: block; }
+        .viewer img { 
+        width: 100%; /* Obrázek se roztáhne na celou šířku boxu */
+        height: auto; 
+        border-radius: 4px; 
+        display: block; 
+        }
         
         /* Archive Overlay/Tab */
         .archive-list { display: none; background: #161e2e; padding: 15px; border-radius: 8px; border: 1px solid #243044; margin-top: 10px; }
