@@ -8,43 +8,35 @@
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
         body { background-color: #0b0f19; color: #e2e8f0; display: flex; flex-direction: column; align-items: center; min-height: 100vh; padding: 20px; }
         
-        .container { 
-        width: 100%; 
-        max-width: 1500px; /* Zvětšeno z 1100px na 1500px */
-        display: flex; 
-        flex-direction: column; 
-        gap: 15px; 
-        }
+        .container { width: 100%; max-width: 1500px; display: flex; flex-direction: column; gap: 15px; }
         
-        /* Top Bar */
+        /* Header */
         .header { display: flex; justify-content: space-between; align-items: center; background: #161e2e; padding: 12px 20px; border-radius: 8px; border: 1px solid #243044; }
         .title { font-size: 1.2rem; font-weight: bold; color: #60a5fa; display: flex; align-items: center; gap: 10px; }
         .badge { background: #2563eb; color: #fff; font-size: 0.75rem; padding: 2px 8px; border-radius: 12px; }
         
-        /* Navigation Controls */
-        .controls-panel { background: #161e2e; padding: 15px; border-radius: 8px; border: 1px solid #243044; display: flex; flex-direction: column; gap: 12px; }
-        .nav-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        /* Navigation & Categories */
+        .controls-panel { background: #161e2e; padding: 15px; border-radius: 8px; border: 1px solid #243044; display: flex; flex-direction: column; gap: 15px; }
         
-        button { background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: 0.2s; }
+        .category-group { display: flex; flex-direction: column; gap: 6px; }
+        .category-title { font-size: 0.75rem; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; }
+        .buttons-row { display: flex; flex-wrap: wrap; gap: 6px; }
+        
+        button { background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: 0.2s; }
         button:hover { background: #334155; color: #fff; }
-        button.active { background: #2563eb; color: #fff; border-color: #3b82f6; }
+        button.active { background: #2563eb; color: #fff; border-color: #3b82f6; font-weight: bold; }
         
         /* Slider section */
-        .slider-row { display: flex; align-items: center; gap: 15px; background: #0f172a; padding: 10px 15px; border-radius: 6px; }
-        .time-display { font-family: monospace; font-size: 1rem; color: #38bdf8; min-width: 170px; font-weight: bold; }
+        .slider-row { display: flex; align-items: center; gap: 15px; background: #0f172a; padding: 10px 15px; border-radius: 6px; border: 1px solid #1e293b; }
+        .time-display { font-family: monospace; font-size: 1.05rem; color: #38bdf8; min-width: 170px; font-weight: bold; }
         input[type=range] { flex: 1; accent-color: #38bdf8; cursor: pointer; }
         
         /* Viewer Box */
-        .viewer { display: flex; justify-content: center; align-items: center; background: #0f172a; border-radius: 8px; border: 1px solid #243044; overflow: hidden; min-height: 400px; padding: 10px; }
-        .viewer img { 
-        width: 100%; /* Obrázek se roztáhne na celou šířku boxu */
-        height: auto; 
-        border-radius: 4px; 
-        display: block; 
-        }
+        .viewer { display: flex; justify-content: center; align-items: center; background: #0f172a; border-radius: 8px; border: 1px solid #243044; overflow: hidden; padding: 10px; }
+        .viewer img { width: 100%; height: auto; border-radius: 4px; display: block; }
         
-        /* Archive Overlay/Tab */
-        .archive-list { display: none; background: #161e2e; padding: 15px; border-radius: 8px; border: 1px solid #243044; margin-top: 10px; }
+        /* Archive Tab */
+        .archive-list { display: none; background: #161e2e; padding: 15px; border-radius: 8px; border: 1px solid #243044; }
         .archive-item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #243044; cursor: pointer; }
         .archive-item:hover { background: #1e293b; }
     </style>
@@ -65,10 +57,8 @@
     <!-- MAIN SIMULATION VIEW -->
     <div id="view-sim">
         <div class="controls-panel">
-            <!-- Fields -->
-            <div class="nav-row" id="field-buttons">
-                <!-- Dynamicky doplňovaná tlačítka veličin -->
-            </div>
+            <!-- Kategorizovaná tlačítka -->
+            <div id="categories-container" style="display: flex; flex-direction: column; gap: 12px;"></div>
             
             <!-- Playback & Slider -->
             <div class="slider-row">
@@ -100,7 +90,31 @@
     let isPlaying = false;
     let playInterval = null;
 
-    // Načtení metadat
+    // Struktura kategorií
+    const fieldCategories = {
+        "Povrch & Synoptika": {
+            "temp": "Teplota 2m",
+            "dewpoint": "Rosný bod",
+            "mslp": "MSLP Tlak",
+            "wind10m": "Vítr 10m",
+            "sat_ir": "IR Satelit"
+        },
+        "Instabilita & Střih větru": {
+            "cape": "MUCAPE",
+            "cin": "MUCIN",
+            "shear_0_1km": "Shear 0-1km",
+            "shear_0_3km": "Shear 0-3km",
+            "shear_0_6km": "Shear 0-6km"
+        },
+        "Radar & Konvekce": {
+            "radar_max": "Max dBZ",
+            "radar_2km": "2km dBZ",
+            "echotops_18": "Echo Tops 18",
+            "echotops_45": "Echo Tops 45",
+            "lightning": "Blesková aktivita"
+        }
+    };
+
     async function init() {
         try {
             const res = await fetch('web_data/runs.json');
@@ -119,18 +133,8 @@
         currentRun = currentData.find(r => r.run_id === runId);
         document.getElementById('model-name').innerText = currentRun.model;
         
-        // Nastavení polí
-        const fieldsBox = document.getElementById('field-buttons');
-        fieldsBox.innerHTML = '';
-        currentRun.fields.forEach(f => {
-            const btn = document.createElement('button');
-            btn.innerText = f.toUpperCase();
-            btn.className = (f === currentField) ? 'active' : '';
-            btn.onclick = () => setField(f);
-            fieldsBox.appendChild(btn);
-        });
+        renderCategories();
 
-        // Nastavení slideru
         const slider = document.getElementById('time-slider');
         slider.max = currentRun.total_steps - 1;
         slider.value = 0;
@@ -140,11 +144,48 @@
         preloadImages();
     }
 
+    function renderCategories() {
+        const container = document.getElementById('categories-container');
+        container.innerHTML = '';
+
+        for (const [catName, fieldsMap] of Object.entries(fieldCategories)) {
+            // Zjistíme, které veličiny z dané kategorie run reálně obsahuje
+            const activeFieldsInCat = Object.keys(fieldsMap).filter(f => currentRun.fields.includes(f));
+            
+            if (activeFieldsInCat.length === 0) continue;
+
+            const groupEl = document.createElement('div');
+            groupEl.className = 'category-group';
+
+            const titleEl = document.createElement('div');
+            titleEl.className = 'category-title';
+            titleEl.innerText = catName;
+            groupEl.appendChild(titleEl);
+
+            const rowEl = document.createElement('div');
+            rowEl.className = 'buttons-row';
+
+            activeFieldsInCat.forEach(fKey => {
+                const btn = document.createElement('button');
+                btn.innerText = fieldsMap[fKey];
+                btn.className = (fKey === currentField) ? 'active' : '';
+                btn.onclick = () => setField(fKey);
+                rowEl.appendChild(btn);
+            });
+
+            groupEl.appendChild(rowEl);
+            container.appendChild(groupEl);
+        }
+    }
+
     function setField(field) {
         currentField = field;
-        document.querySelectorAll('#field-buttons button').forEach(b => {
-            b.classList.toggle('active', b.innerText.toLowerCase() === field);
+        document.querySelectorAll('.buttons-row button').forEach(b => {
+            b.classList.remove('active');
         });
+        
+        // Znovu vykreslíme tlačítka pro nastavení aktivního stavu
+        renderCategories();
         updateImage();
         preloadImages();
     }
