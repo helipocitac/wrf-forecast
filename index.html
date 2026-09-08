@@ -3,274 +3,159 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WRF Simulation - Forecast</title>
+    <title>WRF Model Viewer</title>
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        body { background-color: #0b0f19; color: #e2e8f0; display: flex; flex-direction: column; align-items: center; min-height: 100vh; padding: 20px; }
-        
-        .container { width: 100%; max-width: 1500px; display: flex; flex-direction: column; gap: 15px; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
         
         /* Header */
-        .header { display: flex; justify-content: space-between; align-items: center; background: #161e2e; padding: 12px 20px; border-radius: 8px; border: 1px solid #243044; }
-        .title { font-size: 1.2rem; font-weight: bold; color: #60a5fa; display: flex; align-items: center; gap: 10px; }
-        .badge { background: #2563eb; color: #fff; font-size: 0.75rem; padding: 2px 8px; border-radius: 12px; }
-        
-        /* Navigation & Categories */
-        .controls-panel { background: #161e2e; padding: 15px; border-radius: 8px; border: 1px solid #243044; display: flex; flex-direction: column; gap: 15px; }
-        
-        .category-group { display: flex; flex-direction: column; gap: 6px; }
-        .category-title { font-size: 0.75rem; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; }
-        .buttons-row { display: flex; flex-wrap: wrap; gap: 6px; }
-        
-        button { background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: 0.2s; }
-        button:hover { background: #334155; color: #fff; }
-        button.active { background: #2563eb; color: #fff; border-color: #3b82f6; font-weight: bold; }
-        
-        /* Slider section */
-        .slider-row { display: flex; align-items: center; gap: 15px; background: #0f172a; padding: 10px 15px; border-radius: 6px; border: 1px solid #1e293b; }
-        .time-display { font-family: monospace; font-size: 1.05rem; color: #38bdf8; min-width: 170px; font-weight: bold; }
+        header { height: 48px; background: #1e293b; border-bottom: 1px solid #334155; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; }
+        .logo { font-weight: bold; font-size: 16px; color: #38bdf8; display: flex; align-items: center; gap: 8px; }
+        .badge { background: #0284c7; color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 4px; }
+
+        /* Main Container Layout */
+        .main-container { flex: 1; display: flex; overflow: hidden; }
+
+        /* Sidebar Navigation */
+        sidebar { width: 260px; background: #1e293b; border-right: 1px solid #334155; display: flex; flex-direction: column; overflow-y: auto; }
+        .sidebar-section { border-bottom: 1px solid #334155; }
+        .sidebar-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; padding: 12px 16px 6px 16px; }
+        .nav-btn { display: block; width: 100%; text-align: left; background: transparent; border: none; color: #cbd5e1; padding: 8px 16px; font-size: 13px; cursor: pointer; transition: all 0.15s; }
+        .nav-btn:hover { background: #334155; color: #fff; }
+        .nav-btn.active { background: #0284c7; color: #fff; font-weight: 600; border-left: 4px solid #38bdf8; }
+
+        /* Viewer Area */
+        .viewer-area { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #0f172a; padding: 12px; position: relative; }
+        .map-wrapper { flex: 1; display: flex; align-items: center; justify-content: center; width: 100%; max-height: calc(100vh - 120px); }
+        .map-wrapper img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5); }
+
+        /* Bottom Controls Bar */
+        .controls-bar { width: 100%; max-width: 1100px; background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 8px 16px; display: flex; align-items: center; gap: 16px; margin-top: 8px; }
+        .ctrl-btn { background: #334155; border: none; color: #fff; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; }
+        .ctrl-btn:hover { background: #475569; }
+        .slider-container { flex: 1; display: flex; align-items: center; gap: 12px; }
         input[type=range] { flex: 1; accent-color: #38bdf8; cursor: pointer; }
-        
-        /* Viewer Box */
-        .viewer { display: flex; justify-content: center; align-items: center; background: #0f172a; border-radius: 8px; border: 1px solid #243044; overflow: hidden; padding: 10px; }
-        .viewer img { width: 100%; height: auto; border-radius: 4px; display: block; }
-        
-        /* Archive Tab */
-        .archive-list { display: none; background: #161e2e; padding: 15px; border-radius: 8px; border: 1px solid #243044; }
-        .archive-item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #243044; cursor: pointer; }
-        .archive-item:hover { background: #1e293b; }
+        .time-display { font-family: monospace; font-size: 13px; color: #38bdf8; font-weight: 600; min-width: 140px; text-align: right; }
     </style>
 </head>
 <body>
 
-<div class="container">
-    <div class="header">
-        <div class="title">
-            WRF Simulation <span class="badge" id="model-name">ARW v4</span>
-        </div>
-        <div>
-            <button id="tab-sim" class="active" onclick="showTab('sim')">Simulace</button>
-            <button id="tab-arch" onclick="showTab('arch')">Archiv</button>
-        </div>
-    </div>
+<header>
+    <div class="logo">WRF METEO VIEWER <span class="badge">ARW 3km</span></div>
+    <div id="run-info" style="font-size: 12px; color: #94a3b8;">Načítám...</div>
+</header>
 
-    <!-- MAIN SIMULATION VIEW -->
-    <div id="view-sim">
-        <div class="controls-panel">
-            <!-- Kategorizovaná tlačítka -->
-            <div id="categories-container" style="display: flex; flex-direction: column; gap: 12px;"></div>
-            
-            <!-- Playback & Slider -->
-            <div class="slider-row">
-                <button id="play-btn" onclick="togglePlay()">Play ▶</button>
-                <button onclick="step(-1)">❮</button>
-                <button onclick="step(1)">❯</button>
-                <input type="range" id="time-slider" min="0" value="0" oninput="onSliderMove(this.value)">
-                <div class="time-display" id="time-text">--:-- UTC</div>
+<div class="main-container">
+    <sidebar id="sidebar"></sidebar>
+
+    <div class="viewer-area">
+        <div class="map-wrapper">
+            <img id="map-img" src="" alt="WRF Output Map">
+        </div>
+
+        <div class="controls-bar">
+            <button class="ctrl-btn" id="play-btn">Play ►</button>
+            <button class="ctrl-btn" id="prev-btn">◄</button>
+            <button class="ctrl-btn" id="next-btn">►</button>
+            <div class="slider-container">
+                <input type="range" id="time-slider" min="0" value="0" step="1">
             </div>
+            <div class="time-display" id="time-val">--:-- UTC</div>
         </div>
-
-        <div class="viewer" style="margin-top: 15px;">
-            <img id="map-img" src="" alt="WRF Output">
-        </div>
-    </div>
-
-    <!-- ARCHIVE VIEW -->
-    <div id="view-arch" class="archive-list">
-        <h3>Dostupné simulace</h3>
-        <div id="archive-items" style="margin-top: 10px;"></div>
     </div>
 </div>
 
 <script>
-    let currentData = null;
+    const fieldCategories = {
+        "Povrch & Synoptika": { "temp": "Teplota 2m", "dewpoint": "Rosný bod", "mslp": "MSLP Tlak", "wind10m": "Vítr 10m", "sat_ir": "IR Satelit" },
+        "Srážky": { "precip_total": "Celkové srážky", "precip_1h": "Srážky 1h", "precip_6h": "Srážky 6h", "precip_24h": "Srážky 24h" },
+        "Instabilita & Střih": { "cape": "MUCAPE", "cin": "MUCIN", "shear_0_1km": "Shear 0-1km", "shear_0_3km": "Shear 0-3km", "shear_0_6km": "Shear 0-6km" },
+        "Radar & Konvekce": { "radar_max": "Max dBZ", "radar_2km": "2km dBZ", "echotops_18": "Echo Tops 18", "echotops_45": "Echo Tops 45", "lightning": "Blesková aktivita" },
+        "Výškový vítr": { "wind_925hpa": "925 hPa", "wind_850hpa": "850 hPa", "wind_700hpa": "700 hPa", "wind_500hpa": "500 hPa", "wind_400hpa": "400 hPa", "wind_300hpa": "300 hPa", "wind_200hpa": "200 hPa" },
+        "Výšková teplota": { "temp_925hpa": "925 hPa", "temp_850hpa": "850 hPa", "temp_700hpa": "700 hPa", "temp_500hpa": "500 hPa", "temp_400hpa": "400 hPa", "temp_300hpa": "300 hPa", "temp_200hpa": "200 hPa" }
+    };
+
     let currentRun = null;
-    let currentField = 'cape';
+    let activeField = "radar_max";
     let currentStep = 0;
     let isPlaying = false;
     let playInterval = null;
 
-    // Struktura kategorií
-    const fieldCategories = {
-        "Povrch & Synoptika": {
-            "temp": "Teplota 2m",
-            "dewpoint": "Rosný bod",
-            "mslp": "MSLP Tlak",
-            "wind10m": "Vítr 10m",
-            "sat_ir": "IR Satelit"
-        },
-        "Instabilita & Střih větru": {
-            "cape": "MUCAPE",
-            "cin": "MUCIN",
-            "shear_0_1km": "Shear 0-1km",
-            "shear_0_3km": "Shear 0-3km",
-            "shear_0_6km": "Shear 0-6km"
-        },
-        "Radar & Konvekce": {
-            "radar_max": "Max dBZ",
-            "radar_2km": "2km dBZ",
-            "echotops_18": "Echo Tops 18",
-            "echotops_45": "Echo Tops 45",
-            "lightning": "Blesková aktivita"
-        },
-        "Výškový vítr": {
-            "wind_925hpa": "925 hPa",
-            "wind_850hpa": "850 hPa",
-            "wind_700hpa": "700 hPa",
-            "wind_500hpa": "500 hPa",
-            "wind_400hpa": "400 hPa",
-            "wind_300hpa": "300 hPa",
-            "wind_200hpa": "200 hPa"
-        },
-        "Výšková teplota": {
-            "temp_925hpa": "925 hPa",
-            "temp_850hpa": "850 hPa",
-            "temp_700hpa": "700 hPa",
-            "temp_500hpa": "500 hPa",
-            "temp_400hpa": "400 hPa",
-            "temp_300hpa": "300 hPa",
-            "temp_200hpa": "200 hPa"
+    async function init() {
+        const res = await fetch('web_data/runs.json');
+        const runs = await res.json();
+        currentRun = runs[0];
+        
+        document.getElementById('run-info').innerText = `Run: ${currentRun.run_id} | Max CAPE: ${currentRun.max_cape} J/kg`;
+        
+        const slider = document.getElementById('time-slider');
+        slider.max = currentRun.total_steps - 1;
+
+        buildSidebar();
+        updateMap();
+    }
+
+    function buildSidebar() {
+        const sb = document.getElementById('sidebar');
+        sb.innerHTML = '';
+
+        for (const [catName, fields] of Object.entries(fieldCategories)) {
+            const sec = document.createElement('div');
+            sec.className = 'sidebar-section';
+            
+            const title = document.createElement('div');
+            title.className = 'sidebar-title';
+            title.innerText = catName;
+            sec.appendChild(title);
+
+            for (const [key, label] of Object.entries(fields)) {
+                const btn = document.createElement('button');
+                btn.className = `nav-btn ${key === activeField ? 'active' : ''}`;
+                btn.innerText = label;
+                btn.onclick = () => {
+                    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    activeField = key;
+                    updateMap();
+                };
+                sec.appendChild(btn);
+            }
+            sb.appendChild(sec);
+        }
+    }
+
+    function updateMap() {
+        const stepStr = String(currentStep).padStart(3, '0');
+        const imgPath = `web_data/${currentRun.run_id}/${activeField}/${stepStr}.webp`;
+        document.getElementById('map-img').src = imgPath;
+        document.getElementById('time-slider').value = currentStep;
+        document.getElementById('time-val').innerText = currentRun.time_steps[currentStep];
+    }
+
+    // Ovládání
+    document.getElementById('time-slider').oninput = (e) => { currentStep = parseInt(e.target.value); updateMap(); };
+    document.getElementById('prev-btn').onclick = () => { if (currentStep > 0) { currentStep--; updateMap(); } };
+    document.getElementById('next-btn').onclick = () => { if (currentStep < currentRun.total_steps - 1) { currentStep++; updateMap(); } };
+
+    document.getElementById('play-btn').onclick = () => {
+        isPlaying = !isPlaying;
+        document.getElementById('play-btn').innerText = isPlaying ? "Pause ❚❚" : "Play ►";
+        if (isPlaying) {
+            playInterval = setInterval(() => {
+                currentStep = (currentStep + 1) % currentRun.total_steps;
+                updateMap();
+            }, 300);
+        } else {
+            clearInterval(playInterval);
         }
     };
 
-    async function init() {
-        try {
-            const res = await fetch('web_data/runs.json');
-            currentData = await res.json();
-            
-            if (currentData.length > 0) {
-                renderArchive();
-                loadRun(currentData[0].run_id);
-            }
-        } catch (e) {
-            console.error("Chyba při načítání runs.json:", e);
-        }
-    }
-
-    function loadRun(runId) {
-        currentRun = currentData.find(r => r.run_id === runId);
-        document.getElementById('model-name').innerText = currentRun.model;
-        
-        renderCategories();
-
-        const slider = document.getElementById('time-slider');
-        slider.max = currentRun.total_steps - 1;
-        slider.value = 0;
-        
-        currentStep = 0;
-        updateImage();
-        preloadImages();
-    }
-
-    function renderCategories() {
-        const container = document.getElementById('categories-container');
-        container.innerHTML = '';
-
-        for (const [catName, fieldsMap] of Object.entries(fieldCategories)) {
-            // Zjistíme, které veličiny z dané kategorie run reálně obsahuje
-            const activeFieldsInCat = Object.keys(fieldsMap).filter(f => currentRun.fields.includes(f));
-            
-            if (activeFieldsInCat.length === 0) continue;
-
-            const groupEl = document.createElement('div');
-            groupEl.className = 'category-group';
-
-            const titleEl = document.createElement('div');
-            titleEl.className = 'category-title';
-            titleEl.innerText = catName;
-            groupEl.appendChild(titleEl);
-
-            const rowEl = document.createElement('div');
-            rowEl.className = 'buttons-row';
-
-            activeFieldsInCat.forEach(fKey => {
-                const btn = document.createElement('button');
-                btn.innerText = fieldsMap[fKey];
-                btn.className = (fKey === currentField) ? 'active' : '';
-                btn.onclick = () => setField(fKey);
-                rowEl.appendChild(btn);
-            });
-
-            groupEl.appendChild(rowEl);
-            container.appendChild(groupEl);
-        }
-    }
-
-    function setField(field) {
-        currentField = field;
-        document.querySelectorAll('.buttons-row button').forEach(b => {
-            b.classList.remove('active');
-        });
-        
-        // Znovu vykreslíme tlačítka pro nastavení aktivního stavu
-        renderCategories();
-        updateImage();
-        preloadImages();
-    }
-
-    function updateImage() {
-        const stepFormatted = String(currentStep).padStart(3, '0');
-        const imgPath = `web_data/${currentRun.run_id}/${currentField}/${stepFormatted}.webp`;
-        
-        document.getElementById('map-img').src = imgPath;
-        document.getElementById('time-text').innerText = currentRun.time_steps[currentStep];
-        document.getElementById('time-slider').value = currentStep;
-    }
-
-    function onSliderMove(val) {
-        currentStep = parseInt(val);
-        updateImage();
-    }
-
-    function step(dir) {
-        currentStep = (currentStep + dir + currentRun.total_steps) % currentRun.total_steps;
-        updateImage();
-    }
-
-    function togglePlay() {
-        isPlaying = !isPlaying;
-        const btn = document.getElementById('play-btn');
-        if (isPlaying) {
-            btn.innerText = 'Pause ❚❚';
-            playInterval = setInterval(() => step(1), 150);
-        } else {
-            btn.innerText = 'Play ▶';
-            clearInterval(playInterval);
-        }
-    }
-
-    function preloadImages() {
-        for (let i = 0; i < currentRun.total_steps; i++) {
-            const img = new Image();
-            const stepFormatted = String(i).padStart(3, '0');
-            img.src = `web_data/${currentRun.run_id}/${currentField}/${stepFormatted}.webp`;
-        }
-    }
-
-    function showTab(tab) {
-        document.getElementById('view-sim').style.display = tab === 'sim' ? 'block' : 'none';
-        document.getElementById('view-arch').style.display = tab === 'arch' ? 'block' : 'none';
-        document.getElementById('tab-sim').className = tab === 'sim' ? 'active' : '';
-        document.getElementById('tab-arch').className = tab === 'arch' ? 'active' : '';
-    }
-
-    function renderArchive() {
-        const box = document.getElementById('archive-items');
-        box.innerHTML = '';
-        currentData.forEach(r => {
-            const item = document.createElement('div');
-            item.className = 'archive-item';
-            item.innerHTML = `
-                <div><strong>${r.run_id}</strong> (${r.init_time} - ${r.end_time})</div>
-                <div>Max CAPE: <b>${r.max_cape} J/kg</b></div>
-            `;
-            item.onclick = () => {
-                loadRun(r.run_id);
-                showTab('sim');
-            };
-            box.appendChild(item);
-        });
-    }
+    // Klávesové zkratky (Šipky + Mezerník)
+    window.onkeydown = (e) => {
+        if (e.key === "ArrowRight") { if (currentStep < currentRun.total_steps - 1) currentStep++; updateMap(); }
+        if (e.key === "ArrowLeft") { if (currentStep > 0) currentStep--; updateMap(); }
+        if (e.key === " ") { e.preventDefault(); document.getElementById('play-btn').click(); }
+    };
 
     init();
 </script>

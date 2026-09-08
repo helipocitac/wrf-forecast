@@ -1,0 +1,6 @@
+wrfvystupy/
+colortables/
+*.nc
+*.ct
+__pycache__/
+.vscode/
