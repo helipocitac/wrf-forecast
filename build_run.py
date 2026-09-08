@@ -8,23 +8,25 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.patheffects as mpatheffects
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from scipy.ndimage import gaussian_filter
 from wrf import WrfFile, getvar, interplevel
-
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 # ==========================================
-# 1. POMOCNÉ & VYPOČETNÍ FUNKCE
+# 1. POMOCNÉ & VYPOČETNÍ FUNKCE (S KEŠOVÁNÍM)
 # ==========================================
 
-def safe_savefig(fig, out_file, retries=15):
-    """Renderuje obrázek v RAM a zapisuje na disk s ošetřením souborových zámků ve Windows."""
+def safe_savefig(fig, out_file, retries=20):
+    """Renderuje obrázek v RAM a zapíše na disk s ošetřením zámků Windows a úklidem .tmp."""
     buf = io.BytesIO()
     fig.savefig(buf, format="webp", dpi=140)
     img_bytes = buf.getvalue()
     buf.close()
 
-    for i in range(retries):
+    for _ in range(retries):
         try:
             with open(out_file, "wb") as f:
                 f.write(img_bytes)
@@ -32,16 +34,32 @@ def safe_savefig(fig, out_file, retries=15):
         except (OSError, PermissionError):
             time.sleep(0.1)
 
+    tmp_file = out_file.with_suffix(f".tmp_{time.time_ns()}")
     try:
-        tmp_file = out_file.with_suffix(f".tmp_{time.time_ns()}")
         with open(tmp_file, "wb") as f:
             f.write(img_bytes)
-        os.replace(tmp_file, out_file)
+        
+        for _ in range(retries):
+            try:
+                if out_file.exists():
+                    try:
+                        out_file.unlink()
+                    except Exception:
+                        pass
+                os.replace(tmp_file, out_file)
+                return
+            except (OSError, PermissionError):
+                time.sleep(0.15)
     except Exception as e:
-        print(f"Chyba při zápisu {out_file}: {e}")
+        print(f"Chyba při zápisu {out_file.name}: {e}")
+    finally:
+        if tmp_file.exists():
+            try:
+                tmp_file.unlink()
+            except Exception:
+                pass
 
 def load_custom_cmap(filepath):
-    """Načte .ct soubor jako přesnou diskrétní ListedColormap odpovídající kroku v .ct file."""
     if not filepath.exists():
         print(f"Varování: Soubor {filepath.name} neexistuje!")
         return None, None
@@ -62,46 +80,238 @@ def load_custom_cmap(filepath):
         return None, None
 
     vals = np.array(vals)
-    
     cmap = mcolors.ListedColormap(colors[:-1], name=filepath.stem)
     cmap.set_over(colors[-1])
     cmap.set_under(colors[0])
-
     return cmap, vals
 
-def calc_pressure_level(f, step, level_hpa, var_type):
-    p = getvar(f, "pressure", timeidx=step)
+def get_cached(f, step, cache, var_name):
+    """Zajistí, že se každá 3D/2D proměnná z WRF načte v daném čase maximálně JEDNOU."""
+    if var_name not in cache:
+        cache[var_name] = getvar(f, var_name, timeidx=step)
+    return cache[var_name]
+
+def draw_value_grid(ax, lons, lats, data, num_x=12, num_y=7, fmt="{:.0f}"):
+    data_arr = np.asarray(data)
+    lons_arr = np.asarray(lons)
+    lats_arr = np.asarray(lats)
+    ny, nx = data_arr.shape
+
+    y_indices = np.linspace(int(ny * 0.08), int(ny * 0.92), num_y, dtype=int)
+    x_indices = np.linspace(int(nx * 0.08), int(nx * 0.92), num_x, dtype=int)
+
+    for iy in y_indices:
+        for ix in x_indices:
+            val = data_arr[iy, ix]
+            if not np.isfinite(val):
+                continue
+
+            lon_val = lons_arr[iy, ix]
+            lat_val = lats_arr[iy, ix]
+
+            txt = ax.text(
+                lon_val, lat_val, fmt.format(val),
+                transform=ccrs.PlateCarree(),
+                fontsize=7.5,
+                fontweight='bold',
+                ha='center', va='center',
+                color='#0f172a',
+                zorder=30
+            )
+            txt.set_path_effects([
+                mpatheffects.withStroke(linewidth=1.8, foreground='#ffffff', alpha=0.9)
+            ])
+
+def calc_pressure_uv(f, step, cache, level_hpa):
+    p = get_cached(f, step, cache, "pressure")
+    u = get_cached(f, step, cache, "ua")
+    v = get_cached(f, step, cache, "va")
+    u_p = interplevel(u, p, level_hpa)
+    v_p = interplevel(v, p, level_hpa)
+    return u_p, v_p
+
+def draw_streamlines(ax, lons, lats, u, v, color='white', linewidth=0.8, density=1.2):
+    """Vykreslí husté plynulé proudnice větru (streamlines)."""
+    u_arr = np.squeeze(np.asarray(u, dtype=np.float32))
+    v_arr = np.squeeze(np.asarray(v, dtype=np.float32))
+    lat_arr = np.squeeze(np.asarray(lats, dtype=np.float32))
+    lon_arr = np.squeeze(np.asarray(lons, dtype=np.float32))
+
+    u_arr = np.nan_to_num(u_arr, nan=0.0)
+    v_arr = np.nan_to_num(v_arr, nan=0.0)
+
+    ny, nx = u_arr.shape
+    stride = 2 if nx > 150 else 1
+
+    u_sub = u_arr[::stride, ::stride]
+    v_sub = v_arr[::stride, ::stride]
+    lat_sub = lat_arr[::stride, ::stride]
+    lon_sub = lon_arr[::stride, ::stride]
+
+    sub_ny, sub_nx = u_sub.shape
+    if sub_ny < 2 or sub_nx < 2:
+        return
+
+    x_1d = np.linspace(float(np.nanmin(lon_sub)), float(np.nanmax(lon_sub)), sub_nx)
+    y_1d = np.linspace(float(np.nanmin(lat_sub)), float(np.nanmax(lat_sub)), sub_ny)
+
+    try:
+        ax.streamplot(
+            x_1d, y_1d, u_sub, v_sub,
+            transform=ccrs.PlateCarree(),
+            color=color,
+            linewidth=linewidth,
+            density=density, # Ponechána vysoká hustota podle přání
+            arrowstyle='->',
+            arrowsize=1.2,
+            minlength=0.2,
+            zorder=25
+        )
+    except Exception as e:
+        print(f"[STREAMLINE ERROR]: {e}")
+
+def calc_pressure_level(f, step, cache, level_hpa, var_type):
+    p = get_cached(f, step, cache, "pressure")
     if var_type == "wind":
-        u = getvar(f, "ua", timeidx=step)
-        v = getvar(f, "va", timeidx=step)
+        u = get_cached(f, step, cache, "ua")
+        v = get_cached(f, step, cache, "va")
         wspd_kmh = np.sqrt(u**2 + v**2) * 3.6
         return interplevel(wspd_kmh, p, level_hpa)
     elif var_type == "temp":
-        tc = getvar(f, "tc", timeidx=step)
+        tc = get_cached(f, step, cache, "tc")
         return interplevel(tc, p, level_hpa)
 
-def calc_max_refl10cm(f, step):
+def calc_rh2(f, step, cache):
     try:
-        refl = getvar(f, "REFL_10CM", timeidx=step)
+        rh2 = get_cached(f, step, cache, "rh2")
+        return np.clip(np.asarray(rh2, dtype=np.float32), 0.0, 100.0)
+    except Exception:
+        t2 = get_cached(f, step, cache, "T2") - 273.15
+        td2 = get_cached(f, step, cache, "td2")
+        e = 6.112 * np.exp((17.67 * td2) / (td2 + 243.5))
+        es = 6.112 * np.exp((17.67 * t2) / (t2 + 243.5))
+        return np.clip(100.0 * (e / es), 0.0, 100.0)
+
+def calc_pressure_rh(f, step, cache, level_hpa):
+    p = get_cached(f, step, cache, "pressure")
+    rh = get_cached(f, step, cache, "rh")
+    return interplevel(rh, p, level_hpa)
+
+def calc_pwat(f, step, cache):
+    """Srážitelná voda v celém sloupci atmosféry (PWAT) v mm."""
+    try:
+        pw = get_cached(f, step, cache, "pw")
+        return np.maximum(np.asarray(pw, dtype=np.float32), 0.0)
+    except Exception as e:
+        print(f"[PWAT ERROR]: {e}")
+        return np.zeros_like(get_cached(f, step, cache, "XLAT"), dtype=np.float32)
+
+def calc_cloud_cover_layer(f, step, cache, layer_type="total"):
+    """
+    Vypočítá pokrytí oblačností (%) pro celou atmosféru nebo konkrétní vrstvu.
+    - low:  >= 800 hPa (~0 až 2 km AGL)
+    - mid:  800 až 400 hPa (~2 až 6 km AGL)
+    - high: < 400 hPa (~nad 6 km AGL)
+    """
+    try:
+        cldfra = get_cached(f, step, cache, "CLDFRA")
+        cld_arr = np.clip(np.asarray(cldfra, dtype=np.float32), 0.0, 1.0)
+
+        if layer_type != "total":
+            p = get_cached(f, step, cache, "pressure")
+            p_arr = np.asarray(p, dtype=np.float32)
+
+            if layer_type == "low":
+                mask = p_arr >= 800.0
+            elif layer_type == "mid":
+                mask = (p_arr < 800.0) & (p_arr >= 400.0)
+            elif layer_type == "high":
+                mask = p_arr < 400.0
+            else:
+                mask = np.ones_like(p_arr, dtype=bool)
+
+            cld_arr = np.where(mask, cld_arr, 0.0)
+
+        # Náhodné překrývání vrstev (random overlap)
+        layer_cld = (1.0 - np.prod(1.0 - cld_arr, axis=0)) * 100.0
+        return np.clip(layer_cld, 0.0, 100.0)
+    except Exception as e:
+        print(f"[{layer_type.upper()} CLOUD ERROR]: {e}")
+        return np.zeros_like(get_cached(f, step, cache, "XLAT"), dtype=np.float32)
+
+def calc_freezing_level(f, step, cache):
+    """Výška hladiny 0 °C над terénem (m AGL)."""
+    try:
+        tc = get_cached(f, step, cache, "tc")
+        z3d = get_cached(f, step, cache, "z")
+        ter = get_cached(f, step, cache, "ter")
+        zagl = z3d - ter
+        fz_lvl = interplevel(zagl, tc, 0.0)
+        return np.maximum(np.nan_to_num(fz_lvl, nan=0.0), 0.0)
+    except Exception as e:
+        print(f"[FREEZING LEVEL ERROR]: {e}")
+        return np.zeros_like(get_cached(f, step, cache, "XLAT"), dtype=np.float32)
+
+def calc_gusts_universal(f, step, cache):
+    u10 = get_cached(f, step, cache, "U10")
+    v10 = get_cached(f, step, cache, "V10")
+    wspd10 = np.sqrt(u10**2 + v10**2)
+    
+    try:
+        pblh = np.asarray(get_cached(f, step, cache, "PBLH"), dtype=np.float32)
+        try:
+            uvmet = get_cached(f, step, cache, "uvmet")
+            u3d, v3d = uvmet[0], uvmet[1]
+        except Exception:
+            u3d = get_cached(f, step, cache, "ua")
+            v3d = get_cached(f, step, cache, "va")
+            
+        wspd3d = np.sqrt(u3d**2 + v3d**2)
+        z3d = get_cached(f, step, cache, "z")
+        ter = get_cached(f, step, cache, "ter")
+        zagl = z3d - ter
+        
+        target_h = np.clip(pblh, 200.0, 1500.0)
+        
+        nz, ny, nx = zagl.shape
+        idx = np.sum(zagl < target_h, axis=0)
+        idx = np.clip(idx, 1, nz - 1)
+        y_grid, x_grid = np.ogrid[:ny, :nx]
+        
+        z0 = zagl[idx - 1, y_grid, x_grid]
+        z1 = zagl[idx, y_grid, x_grid]
+        dz = np.maximum(z1 - z0, 1e-5)
+        frac = np.clip((target_h - z0) / dz, 0.0, 1.0)
+        
+        wspd_pbl = wspd3d[idx - 1, y_grid, x_grid] + frac * (wspd3d[idx, y_grid, x_grid] - wspd3d[idx - 1, y_grid, x_grid])
+        gust_ms = np.maximum(1.28 * wspd10, wspd10 + 0.5 * np.maximum(wspd_pbl - wspd10, 0.0))
+    except Exception:
+        gust_ms = wspd10 * 1.35
+        
+    return gust_ms * 3.6
+
+def calc_max_refl10cm(f, step, cache):
+    try:
+        refl = get_cached(f, step, cache, "REFL_10CM")
         max_dbz = np.max(np.asarray(refl), axis=0)
     except Exception:
-        max_dbz = getvar(f, "mdbz", timeidx=step)
+        max_dbz = get_cached(f, step, cache, "mdbz")
 
     smoothed = gaussian_filter(max_dbz.astype(np.float32), sigma=0.3, mode='nearest')
     return np.where(smoothed < 4.0, np.nan, smoothed) 
 
-def calc_sirs(f, step):
+def calc_sirs(f, step, cache):
     try:
-        t_surf_c = getvar(f, "TSK", timeidx=step) - 273.15
+        t_surf_c = get_cached(f, step, cache, "TSK") - 273.15
     except Exception:
-        t_surf_c = getvar(f, "T2", timeidx=step) - 273.15
+        t_surf_c = get_cached(f, step, cache, "T2") - 273.15
 
     try:
-        qc = np.maximum(getvar(f, "QCLOUD", timeidx=step), 0.0)
-        qi = np.maximum(getvar(f, "QICE", timeidx=step), 0.0)
-        qs = np.maximum(getvar(f, "QSNOW", timeidx=step), 0.0)
+        qc = np.maximum(get_cached(f, step, cache, "QCLOUD"), 0.0)
+        qi = np.maximum(get_cached(f, step, cache, "QICE"), 0.0)
+        qs = np.maximum(get_cached(f, step, cache, "QSNOW"), 0.0)
         q_total = qc + qi + qs
-        t_c = getvar(f, "tc", timeidx=step)
+        t_c = get_cached(f, step, cache, "tc")
 
         has_cloud = q_total >= 1.0e-5
         cloud_any = has_cloud.any(axis=0)
@@ -118,7 +328,6 @@ def calc_sirs(f, step):
         grid_y, grid_x = np.ogrid[:ny, :nx]
 
         cloud_top_temp = t_c_rev[top_k_rev, grid_y, grid_x]
-
         t_c_cloud_only = np.where(has_cloud, t_c, np.inf)
         cloud_min_temp = np.min(t_c_cloud_only, axis=0)
         cloud_top_temp = np.minimum(cloud_top_temp, cloud_min_temp)
@@ -127,18 +336,18 @@ def calc_sirs(f, step):
     except Exception:
         return t_surf_c
 
-def calc_total_precip(f, step):
+def calc_total_precip(f, step, cache):
     accum = None
     for name in ('RAINNC', 'RAINC', 'RAINSH'):
         try:
-            var = getvar(f, name, timeidx=step)
+            var = get_cached(f, step, cache, name)
             arr = np.asarray(var, dtype=np.float32)
             accum = arr if accum is None else accum + arr
         except Exception:
             continue
-    return accum if accum is not None else np.zeros_like(getvar(f, "XLAT", timeidx=step))
+    return accum if accum is not None else np.zeros_like(get_cached(f, step, cache, "XLAT"))
 
-def calc_delta_precip(f, step, hours_back):
+def calc_delta_precip(f, step, cache, hours_back):
     current_dt = datetime_times[step]
     target_dt = current_dt - timedelta(hours=hours_back)
     
@@ -148,24 +357,56 @@ def calc_delta_precip(f, step, hours_back):
             past_step = i
             break
             
-    current_p = calc_total_precip(f, step)
-    past_p = calc_total_precip(f, past_step)
+    current_p = calc_total_precip(f, step, cache)
+    past_cache = {}
+    past_p = calc_total_precip(f, past_step, past_cache)
     
     delta = current_p - past_p
     return np.maximum(delta, 0.0)
 
-def calc_bulk_shear(f, step, target_m):
-    u10 = getvar(f, "U10", timeidx=step)
-    v10 = getvar(f, "V10", timeidx=step)
+def calc_snow_depth(f, step, cache):
     try:
-        uvmet = getvar(f, "uvmet", timeidx=step)
+        snowh = get_cached(f, step, cache, "SNOWH")
+        return np.maximum(np.asarray(snowh, dtype=np.float32) * 100.0, 0.0)
+    except Exception:
+        return np.zeros_like(get_cached(f, step, cache, "XLAT"), dtype=np.float32)
+
+def calc_total_snow_acc(f, step, cache):
+    try:
+        snownc = get_cached(f, step, cache, "SNOWNC")
+        return np.maximum(np.asarray(snownc, dtype=np.float32), 0.0)
+    except Exception:
+        return np.zeros_like(get_cached(f, step, cache, "XLAT"), dtype=np.float32)
+
+def calc_delta_snow_acc(f, step, cache, hours_back):
+    current_dt = datetime_times[step]
+    target_dt = current_dt - timedelta(hours=hours_back)
+    
+    past_step = 0
+    for i in range(step, -1, -1):
+        if datetime_times[i] <= target_dt:
+            past_step = i
+            break
+            
+    current_s = calc_total_snow_acc(f, step, cache)
+    past_cache = {}
+    past_s = calc_total_snow_acc(f, past_step, past_cache)
+    
+    delta = current_s - past_s
+    return np.maximum(delta, 0.0)
+
+def calc_bulk_shear(f, step, cache, target_m):
+    u10 = get_cached(f, step, cache, "U10")
+    v10 = get_cached(f, step, cache, "V10")
+    try:
+        uvmet = get_cached(f, step, cache, "uvmet")
         u3d, v3d = uvmet[0], uvmet[1]
     except Exception:
-        u3d = getvar(f, "ua", timeidx=step)
-        v3d = getvar(f, "va", timeidx=step)
+        u3d = get_cached(f, step, cache, "ua")
+        v3d = get_cached(f, step, cache, "va")
 
-    z3d = getvar(f, "z", timeidx=step)
-    ter = getvar(f, "ter", timeidx=step)
+    z3d = get_cached(f, step, cache, "z")
+    ter = get_cached(f, step, cache, "ter")
     zagl = z3d - ter
 
     nz, ny, nx = zagl.shape
@@ -183,14 +424,14 @@ def calc_bulk_shear(f, step, target_m):
 
     return np.sqrt((u_target - u10)**2 + (v_target - v10)**2)
 
-def calc_ref_level(f, step, target_m=2000.0):
+def calc_ref_level(f, step, cache, target_m=2000.0):
     try:
-        dbz = getvar(f, "REFL_10CM", timeidx=step)
+        dbz = get_cached(f, step, cache, "REFL_10CM")
     except Exception:
-        dbz = getvar(f, "dbz", timeidx=step)
+        dbz = get_cached(f, step, cache, "dbz")
 
-    z3d = getvar(f, "z", timeidx=step)
-    ter = getvar(f, "ter", timeidx=step)
+    z3d = get_cached(f, step, cache, "z")
+    ter = get_cached(f, step, cache, "ter")
     zagl = z3d - ter
 
     nz, ny, nx = zagl.shape
@@ -207,14 +448,14 @@ def calc_ref_level(f, step, target_m=2000.0):
     smoothed = gaussian_filter(np.asarray(raw_2km, dtype=np.float32), sigma=0.3, mode='nearest')
     return np.where(smoothed < 4.0, np.nan, smoothed)
 
-def calc_echotops(f, step, threshold_dbz=18.0):
+def calc_echotops(f, step, cache, threshold_dbz=18.0):
     try:
-        refl = getvar(f, "REFL_10CM", timeidx=step)
+        refl = get_cached(f, step, cache, "REFL_10CM")
     except Exception:
-        refl = getvar(f, "dbz", timeidx=step)
+        refl = get_cached(f, step, cache, "dbz")
 
-    z3d = getvar(f, "z", timeidx=step)
-    ter = getvar(f, "ter", timeidx=step)
+    z3d = get_cached(f, step, cache, "z")
+    ter = get_cached(f, step, cache, "ter")
     z_agl_km = (z3d - ter) / 1000.0
 
     refl_arr = np.asarray(refl)
@@ -233,18 +474,91 @@ def calc_echotops(f, step, threshold_dbz=18.0):
 
     return np.where(has_echo, echo_tops_km, np.nan)
 
-def calc_lightning(f, step):
+def calc_sbcape(f, step, cache):
     try:
-        qc = np.maximum(np.asarray(getvar(f, "QCLOUD", timeidx=step), dtype=np.float32), 0.0)
-        qr = np.maximum(np.asarray(getvar(f, "QRAIN", timeidx=step), dtype=np.float32), 0.0)
-        qi = np.maximum(np.asarray(getvar(f, "QICE", timeidx=step), dtype=np.float32), 0.0)
-        qs = np.maximum(np.asarray(getvar(f, "QSNOW", timeidx=step), dtype=np.float32), 0.0)
-        qg = np.maximum(np.asarray(getvar(f, "QGRAUP", timeidx=step), dtype=np.float32), 0.0)
-        temp_c = np.asarray(getvar(f, "tc", timeidx=step), dtype=np.float32)
-        height = np.asarray(getvar(f, "z", timeidx=step), dtype=np.float32)
-        w = np.asarray(getvar(f, "wa", timeidx=step), dtype=np.float32)
-        mdbz = np.nan_to_num(np.asarray(getvar(f, "mdbz", timeidx=step), dtype=np.float32), nan=0.0)
-        dbz = np.nan_to_num(np.asarray(getvar(f, "dbz", timeidx=step), dtype=np.float32), nan=0.0)
+        cape_2d = get_cached(f, step, cache, "cape_2d")
+        cape_arr = np.asarray(cape_2d, dtype=np.float32)
+        sbcape = cape_arr[0] if cape_arr.ndim == 3 else cape_arr
+        return np.maximum(np.nan_to_num(sbcape, nan=0.0), 0.0)
+    except Exception as e:
+        print(f"[SBCAPE ERROR]: {e}")
+        return np.zeros_like(get_cached(f, step, cache, "XLAT"), dtype=np.float32)
+
+def calc_mlcape(f, step, cache):
+    try:
+        cape_3d = get_cached(f, step, cache, "cape_3d")
+        cape_arr = np.asarray(cape_3d, dtype=np.float32)
+
+        if cape_arr.ndim == 4:
+            cape_field = cape_arr[0]
+            num_levels = min(4, cape_field.shape[0])
+            mlcape = np.mean(cape_field[:num_levels, :, :], axis=0)
+        elif cape_arr.ndim == 3:
+            mlcape = cape_arr[0]
+        else:
+            mlcape = cape_arr
+
+        return np.maximum(np.nan_to_num(mlcape, nan=0.0), 0.0)
+    except Exception as e:
+        print(f"[MLCAPE ERROR]: {e}")
+        return np.zeros_like(get_cached(f, step, cache, "XLAT"), dtype=np.float32)
+
+def calc_lapse_rate_700_500(f, step, cache):
+    try:
+        p = get_cached(f, step, cache, "pressure")
+        tc = get_cached(f, step, cache, "tc")
+        z = get_cached(f, step, cache, "z")
+
+        t700 = interplevel(tc, p, 700.0)
+        t500 = interplevel(tc, p, 500.0)
+        z700 = interplevel(z, p, 700.0)
+        z500 = interplevel(z, p, 500.0)
+
+        dz_km = (z500 - z700) / 1000.0
+        dt = t700 - t500
+
+        lapse_rate = dt / dz_km
+        return np.asarray(lapse_rate, dtype=np.float32)
+    except Exception as e:
+        print(f"[LAPSE RATE ERROR]: {e}")
+        return np.zeros_like(get_cached(f, step, cache, "XLAT"), dtype=np.float32)
+
+def calc_lifted_index(f, step, cache):
+    try:
+        p = get_cached(f, step, cache, "pressure")
+        tc = get_cached(f, step, cache, "tc")
+        t2 = get_cached(f, step, cache, "T2") - 273.15
+        td2 = get_cached(f, step, cache, "td2")
+        psfc = get_cached(f, step, cache, "PSFC") / 100.0
+
+        t500_env = interplevel(tc, p, 500.0)
+
+        t_k = t2 + 273.15
+        e = 6.112 * np.exp((17.67 * td2) / (td2 + 243.5))
+        q = (0.622 * e) / (psfc - 0.378 * e)
+        theta_e = (t_k + (2500000.0 / 1004.0) * q) * ((1000.0 / psfc) ** 0.286)
+
+        t_parcel_500_k = (theta_e / ((1000.0 / 500.0) ** 0.286)) - 15.0
+        t_parcel_500_c = t_parcel_500_k - 273.15
+
+        li = t500_env - t_parcel_500_c
+        return np.asarray(li, dtype=np.float32)
+    except Exception as e:
+        print(f"[LIFTED INDEX ERROR]: {e}")
+        return np.zeros_like(get_cached(f, step, cache, "XLAT"), dtype=np.float32)
+
+def calc_lightning(f, step, cache):
+    try:
+        qc = np.maximum(np.asarray(get_cached(f, step, cache, "QCLOUD"), dtype=np.float32), 0.0)
+        qr = np.maximum(np.asarray(get_cached(f, step, cache, "QRAIN"), dtype=np.float32), 0.0)
+        qi = np.maximum(np.asarray(get_cached(f, step, cache, "QICE"), dtype=np.float32), 0.0)
+        qs = np.maximum(np.asarray(get_cached(f, step, cache, "QSNOW"), dtype=np.float32), 0.0)
+        qg = np.maximum(np.asarray(get_cached(f, step, cache, "QGRAUP"), dtype=np.float32), 0.0)
+        temp_c = np.asarray(get_cached(f, step, cache, "tc"), dtype=np.float32)
+        height = np.asarray(get_cached(f, step, cache, "z"), dtype=np.float32)
+        w = np.asarray(get_cached(f, step, cache, "wa"), dtype=np.float32)
+        mdbz = np.nan_to_num(np.asarray(get_cached(f, step, cache, "mdbz"), dtype=np.float32), nan=0.0)
+        dbz = np.nan_to_num(np.asarray(get_cached(f, step, cache, "dbz"), dtype=np.float32), nan=0.0)
 
         q_ice_dense = qi + qs + qg
         in_cloud_core = q_ice_dense > 1.0e-4
@@ -303,7 +617,7 @@ def calc_lightning(f, step):
         return np.clip(final_rate, 0.0, 720.0).astype(np.float32)
     except Exception as e:
         print(f"[LIGHTNING ERROR] step={step}: {e}")
-        return np.zeros_like(getvar(f, "XLAT", timeidx=step), dtype=np.float32)
+        return np.zeros_like(get_cached(f, step, cache, "XLAT"), dtype=np.float32)
 
 # ==========================================
 # 2. NASTAVENÍ SLOŽEK A VSTUPŮ
@@ -328,6 +642,12 @@ shear_cmap, raw_shear_levels = load_custom_cmap(CT_DIR / "Wind_Gust.ct")
 echo_cmap, echo_levels = load_custom_cmap(CT_DIR / "echotops.ct")
 light_cmap, light_levels = load_custom_cmap(CT_DIR / "lightning.ct")
 precip_cmap, precip_levels = load_custom_cmap(CT_DIR / "precip.ct")
+snow_cmap, snow_levels = load_custom_cmap(CT_DIR / "snow.ct")
+lapse_cmap, lapse_levels = load_custom_cmap(CT_DIR / "lapse_rate.ct")
+li_cmap, li_levels = load_custom_cmap(CT_DIR / "lifted_index.ct")
+rh_cmap, rh_levels = load_custom_cmap(CT_DIR / "rh.ct")
+cld_cmap, cld_levels = load_custom_cmap(CT_DIR / "cloudcover.ct")
+iso_cmap, iso_levels = load_custom_cmap(CT_DIR / "izoterma.ct")
 
 if raw_shear_levels is not None:
     shear_levels = np.linspace(0.0, raw_shear_levels.max(), len(raw_shear_levels))
@@ -351,41 +671,125 @@ for step in range(total_steps):
     dt_full_str = str(t_obj)[:19].replace("T", " ").replace("_", " ")
     datetime_times.append(datetime.strptime(dt_full_str, "%Y-%m-%d %H:%M:%S"))
 
+# Pre-clipping geometrií Cartopy pro bleskový rendering
+lon_min, lon_max = float(lons.min()), float(lons.max())
+lat_min, lat_max = float(lats.min()), float(lats.max())
+BOUNDS = [lon_min, lon_max, lat_min, lat_max]
+
+print("Příprava kartografických geometrií v RAM...")
+STATES_GEOMS = list(cfeature.STATES.with_scale('10m').intersecting_geometries(BOUNDS))
+BORDERS_GEOMS = list(cfeature.BORDERS.with_scale('10m').intersecting_geometries(BOUNDS))
+COAST_GEOMS = list(cfeature.COASTLINE.with_scale('10m').intersecting_geometries(BOUNDS))
+
 # ==========================================
 # 3. KONFIGURACE VŠECH DATOVÝCH POLÍ
 # ==========================================
 variables_config = {
-    # --- POVRCH & SYNOPTIKA ---
     "temp": {
         "title": "Teplota ve 2m",
-        "get_data": lambda f, step: getvar(f, "T2", timeidx=step) - 273.15,
+        "get_data": lambda f, step, c: get_cached(f, step, c, "T2") - 273.15,
         "cmap": temp_cmap,
         "levels": temp_levels,
         "label": "°C",
         "ticks": [-50, -40, -30, -20, -10, 0, 10, 20, 30, 40, 50],
-        "extend": "both"
+        "extend": "both",
+        "draw_grid": True
     },
     "dewpoint": {
         "title": "Rosný bod ve 2m",
-        "get_data": lambda f, step: getvar(f, "td2", timeidx=step),
+        "get_data": lambda f, step, c: get_cached(f, step, c, "td2"),
         "cmap": temp_cmap,
         "levels": temp_levels,
         "label": "°C",
         "ticks": [-40, -30, -20, -10, 0, 10, 20, 30, 40, 50],
-        "extend": "both"
+        "extend": "both",
+        "draw_grid": True
+    },
+    "rh2m": {
+        "title": "Relativní vlhkost ve 2m",
+        "get_data": lambda f, step, c: calc_rh2(f, step, c),
+        "cmap": rh_cmap,
+        "levels": rh_levels,
+        "label": "%",
+        "ticks": [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        "extend": "neither"
     },
     "mslp": {
         "title": "MSLP (Tlak)",
-        "get_data": lambda f, step: getvar(f, "slp", timeidx=step),
+        "get_data": lambda f, step, c: get_cached(f, step, c, "slp"),
         "cmap": mslp_cmap,
         "levels": mslp_levels,
         "label": "hPa",
         "ticks": [940, 955, 970, 986, 1001, 1016, 1031, 1046],
         "extend": "both"
     },
+    "pwat": {
+        "title": "Srážitelná voda (PWAT)",
+        "get_data": lambda f, step, c: calc_pwat(f, step, c),
+        "cmap": rh_cmap,
+        "levels": rh_levels,
+        "label": "mm",
+        "ticks": [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        "extend": "max"
+    },
+    "cloud_cover": {
+        "title": "Celková oblačnost",
+        "get_data": lambda f, step, c: calc_cloud_cover_layer(f, step, c, "total"),
+        "cmap": cld_cmap,
+        "levels": cld_levels,
+        "label": "%",
+        "ticks": [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        "extend": "neither"
+    },
+    "cloud_cover_low": {
+        "title": "Nízká oblačnost (>800 hPa)",
+        "get_data": lambda f, step, c: calc_cloud_cover_layer(f, step, c, "low"),
+        "cmap": cld_cmap,
+        "levels": cld_levels,
+        "label": "%",
+        "ticks": [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        "extend": "neither"
+    },
+    "cloud_cover_mid": {
+        "title": "Střední oblačnost (800-400 hPa)",
+        "get_data": lambda f, step, c: calc_cloud_cover_layer(f, step, c, "mid"),
+        "cmap": cld_cmap,
+        "levels": cld_levels,
+        "label": "%",
+        "ticks": [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        "extend": "neither"
+    },
+    "cloud_cover_high": {
+        "title": "Vysoká oblačnost (<400 hPa)",
+        "get_data": lambda f, step, c: calc_cloud_cover_layer(f, step, c, "high"),
+        "cmap": cld_cmap,
+        "levels": cld_levels,
+        "label": "%",
+        "ticks": [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        "extend": "neither"
+    },
+    "freezing_level": {
+        "title": "Nulová izoterma (0 °C)",
+        "get_data": lambda f, step, c: calc_freezing_level(f, step, c),
+        "cmap": iso_cmap,
+        "levels": iso_levels,
+        "label": "m AGL",
+        "ticks": [0, 500, 1000, 1500, 2000, 2500, 3000, 4000, 5000, 6000],
+        "extend": "max"
+    },
     "wind10m": {
         "title": "Vítr v 10m",
-        "get_data": lambda f, step: np.sqrt(getvar(f, "U10", timeidx=step)**2 + getvar(f, "V10", timeidx=step)**2) * 3.6,
+        "get_data": lambda f, step, c: np.sqrt(get_cached(f, step, c, "U10")**2 + get_cached(f, step, c, "V10")**2) * 3.6,
+        "get_uv": lambda f, step, c: (get_cached(f, step, c, "U10"), get_cached(f, step, c, "V10")),
+        "cmap": wind_cmap,
+        "levels": wind_levels,
+        "label": "km/h",
+        "ticks": [0, 20, 40, 60, 80, 100, 120, 140, 160, 200, 240, 280],
+        "extend": "max"
+    },
+    "GUST": {
+        "title": "Nárazy větru v 10m",
+        "get_data": lambda f, step, c: calc_gusts_universal(f, step, c),
         "cmap": wind_cmap,
         "levels": wind_levels,
         "label": "km/h",
@@ -394,18 +798,34 @@ variables_config = {
     },
     "sat_ir": {
         "title": "Simulovaný IR Satelit",
-        "get_data": lambda f, step: calc_sirs(f, step),
+        "get_data": lambda f, step, c: calc_sirs(f, step, c),
         "cmap": sirs_cmap,
         "levels": sirs_levels,
         "label": "°C",
         "ticks": [-90, -80, -70, -65, -60, -55, -50, -45, -40, -30, -10, 0, 10, 30, 50],
         "extend": "both"
     },
-
-    # --- INSTABILITA & STŘIH VĚTRU ---
     "cape": {
         "title": "MUCAPE",
-        "get_data": lambda f, step: getvar(f, "cape_2d", timeidx=step)[0],
+        "get_data": lambda f, step, c: get_cached(f, step, c, "cape_2d")[0],
+        "cmap": cape_cmap,
+        "levels": cape_levels,
+        "label": "J/kg",
+        "ticks": [0, 300, 600, 1000, 1500, 2000, 2500, 3000, 4000, 5000, 6000, 7000],
+        "extend": "max"
+    },
+    "sbcape": {
+        "title": "SBCAPE (Surface-Based)",
+        "get_data": lambda f, step, c: calc_sbcape(f, step, c),
+        "cmap": cape_cmap,
+        "levels": cape_levels,
+        "label": "J/kg",
+        "ticks": [0, 300, 600, 1000, 1500, 2000, 2500, 3000, 4000, 5000, 6000, 7000],
+        "extend": "max"
+    },
+    "mlcape": {
+        "title": "MLCAPE (Mixed-Layer)",
+        "get_data": lambda f, step, c: calc_mlcape(f, step, c),
         "cmap": cape_cmap,
         "levels": cape_levels,
         "label": "J/kg",
@@ -414,7 +834,7 @@ variables_config = {
     },
     "cin": {
         "title": "MUCIN",
-        "get_data": lambda f, step: np.abs(getvar(f, "cape_2d", timeidx=step)[1]),
+        "get_data": lambda f, step, c: np.abs(get_cached(f, step, c, "cape_2d")[1]),
         "cmap": "Blues",
         "levels": [0, 10, 25, 50, 100, 150, 200, 300, 400, 500],
         "label": "J/kg",
@@ -423,7 +843,7 @@ variables_config = {
     },
     "shear_0_1km": {
         "title": "Bulk Shear 0-1 km",
-        "get_data": lambda f, step: calc_bulk_shear(f, step, 1000.0),
+        "get_data": lambda f, step, c: calc_bulk_shear(f, step, c, 1000.0),
         "cmap": shear_cmap,
         "levels": shear_levels,
         "label": "m/s",
@@ -432,7 +852,7 @@ variables_config = {
     },
     "shear_0_3km": {
         "title": "Bulk Shear 0-3 km",
-        "get_data": lambda f, step: calc_bulk_shear(f, step, 3000.0),
+        "get_data": lambda f, step, c: calc_bulk_shear(f, step, c, 3000.0),
         "cmap": shear_cmap,
         "levels": shear_levels,
         "label": "m/s",
@@ -441,18 +861,34 @@ variables_config = {
     },
     "shear_0_6km": {
         "title": "Bulk Shear 0-6 km",
-        "get_data": lambda f, step: calc_bulk_shear(f, step, 6000.0),
+        "get_data": lambda f, step, c: calc_bulk_shear(f, step, c, 6000.0),
         "cmap": shear_cmap,
         "levels": shear_levels,
         "label": "m/s",
         "ticks": [0, 10, 20, 30, 40, 50, 60, 70],
         "extend": "max"
     },
-
-    # --- RADAR & KONVEKCE ---
+    "lapse_rate_700_500": {
+        "title": "Lapse Rate (700-500 hPa)",
+        "get_data": lambda f, step, c: calc_lapse_rate_700_500(f, step, c),
+        "cmap": lapse_cmap,
+        "levels": lapse_levels,
+        "label": "°C/km",
+        "ticks": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9.5],
+        "extend": "both"
+    },
+    "lifted_index": {
+        "title": "Lifted Index (LI)",
+        "get_data": lambda f, step, c: calc_lifted_index(f, step, c),
+        "cmap": li_cmap,
+        "levels": li_levels,
+        "label": "°C",
+        "ticks": [-9, -8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        "extend": "both"
+    },
     "radar_max": {
         "title": "Simulovaný radar (Max dBZ)",
-        "get_data": lambda f, step: calc_max_refl10cm(f, step),
+        "get_data": lambda f, step, c: calc_max_refl10cm(f, step, c),
         "cmap": radar_cmap,
         "levels": radar_levels,
         "label": "dBZ",
@@ -461,7 +897,7 @@ variables_config = {
     },
     "radar_2km": {
         "title": "Odrazivost ve 2 km AGL",
-        "get_data": lambda f, step: calc_ref_level(f, step, 2000.0),
+        "get_data": lambda f, step, c: calc_ref_level(f, step, c, 2000.0),
         "cmap": radar_cmap,
         "levels": radar_levels,
         "label": "dBZ",
@@ -470,7 +906,7 @@ variables_config = {
     },
     "echotops_18": {
         "title": "Echo Tops 18 dBZ",
-        "get_data": lambda f, step: calc_echotops(f, step, 18.0),
+        "get_data": lambda f, step, c: calc_echotops(f, step, c, 18.0),
         "cmap": echo_cmap,
         "levels": echo_levels,
         "label": "km AGL",
@@ -479,7 +915,7 @@ variables_config = {
     },
     "echotops_45": {
         "title": "Echo Tops 45 dBZ",
-        "get_data": lambda f, step: calc_echotops(f, step, 45.0),
+        "get_data": lambda f, step, c: calc_echotops(f, step, c, 45.0),
         "cmap": echo_cmap,
         "levels": echo_levels,
         "label": "km AGL",
@@ -488,18 +924,16 @@ variables_config = {
     },
     "lightning": {
         "title": "Blesková aktivita (LPI)",
-        "get_data": lambda f, step: calc_lightning(f, step),
+        "get_data": lambda f, step, c: calc_lightning(f, step, c),
         "cmap": light_cmap,
         "levels": light_levels,
         "label": "flashes/h",
         "ticks": [0.1, 1, 2, 3, 5, 10, 15, 30, 60, 120, 240, 360, 720],
         "extend": "max"
     },
-
-    # --- SRÁŽKY ---
     "precip_total": {
         "title": "Celkové srážky",
-        "get_data": lambda f, step: calc_total_precip(f, step),
+        "get_data": lambda f, step, c: calc_total_precip(f, step, c),
         "cmap": precip_cmap,
         "levels": precip_levels,
         "label": "mm",
@@ -508,7 +942,7 @@ variables_config = {
     },
     "precip_1h": {
         "title": "Srážky za 1h",
-        "get_data": lambda f, step: calc_delta_precip(f, step, 1.0),
+        "get_data": lambda f, step, c: calc_delta_precip(f, step, c, 1.0),
         "cmap": precip_cmap,
         "levels": precip_levels,
         "label": "mm",
@@ -517,7 +951,7 @@ variables_config = {
     },
     "precip_6h": {
         "title": "Srážky za 6h",
-        "get_data": lambda f, step: calc_delta_precip(f, step, 6.0),
+        "get_data": lambda f, step, c: calc_delta_precip(f, step, c, 6.0),
         "cmap": precip_cmap,
         "levels": precip_levels,
         "label": "mm",
@@ -526,11 +960,56 @@ variables_config = {
     },
     "precip_24h": {
         "title": "Srážky za 24h",
-        "get_data": lambda f, step: calc_delta_precip(f, step, 24.0),
+        "get_data": lambda f, step, c: calc_delta_precip(f, step, c, 24.0),
         "cmap": precip_cmap,
         "levels": precip_levels,
         "label": "mm",
         "ticks": [0.1, 1, 3, 5, 10, 20, 30, 50, 80, 100, 150, 200, 300, 500],
+        "extend": "max"
+    },
+    "snow_depth": {
+        "title": "Celková sněhová pokrývka",
+        "get_data": lambda f, step, c: calc_snow_depth(f, step, c),
+        "cmap": snow_cmap,
+        "levels": snow_levels,
+        "label": "cm",
+        "ticks": [0.1, 1, 2, 5, 10, 20, 30, 50, 80, 100, 150, 200, 300, 400],
+        "extend": "max"
+    },
+    "snow_acc_1h": {
+        "title": "Nový sníh za 1h",
+        "get_data": lambda f, step, c: calc_delta_snow_acc(f, step, c, 1.0),
+        "cmap": snow_cmap,
+        "levels": snow_levels,
+        "label": "cm",
+        "ticks": [0.1, 1, 2, 5, 10, 20, 30, 50, 80, 100, 150, 200, 300, 400],
+        "extend": "max"
+    },
+    "snow_acc_6h": {
+        "title": "Nový sníh za 6h",
+        "get_data": lambda f, step, c: calc_delta_snow_acc(f, step, c, 6.0),
+        "cmap": snow_cmap,
+        "levels": snow_levels,
+        "label": "cm",
+        "ticks": [0.1, 1, 2, 5, 10, 20, 30, 50, 80, 100, 150, 200, 300, 400],
+        "extend": "max"
+    },
+    "snow_acc_24h": {
+        "title": "Nový sníh za 24h",
+        "get_data": lambda f, step, c: calc_delta_snow_acc(f, step, c, 24.0),
+        "cmap": snow_cmap,
+        "levels": snow_levels,
+        "label": "cm",
+        "ticks": [0.1, 1, 2, 5, 10, 20, 30, 50, 80, 100, 150, 200, 300, 400],
+        "extend": "max"
+    },
+    "snow_acc_total": {
+        "title": "Nový sníh celkem",
+        "get_data": lambda f, step, c: calc_total_snow_acc(f, step, c),
+        "cmap": snow_cmap,
+        "levels": snow_levels,
+        "label": "cm",
+        "ticks": [0.1, 1, 2, 5, 10, 20, 30, 50, 80, 100, 150, 200, 300, 400],
         "extend": "max"
     },
 }
@@ -540,7 +1019,8 @@ UPPER_LEVELS = [925, 850, 700, 500, 400, 300, 200]
 for p_lev in UPPER_LEVELS:
     variables_config[f"wind_{p_lev}hpa"] = {
         "title": f"Vítr v {p_lev} hPa",
-        "get_data": lambda f, step, p=p_lev: calc_pressure_level(f, step, p, "wind"),
+        "get_data": lambda f, step, c, p=p_lev: calc_pressure_level(f, step, c, p, "wind"),
+        "get_uv": lambda f, step, c, p=p_lev: calc_pressure_uv(f, step, c, p),
         "cmap": wind_cmap,
         "levels": wind_levels,
         "label": "km/h",
@@ -549,12 +1029,22 @@ for p_lev in UPPER_LEVELS:
     }
     variables_config[f"temp_{p_lev}hpa"] = {
         "title": f"Teplota v {p_lev} hPa",
-        "get_data": lambda f, step, p=p_lev: calc_pressure_level(f, step, p, "temp"),
+        "get_data": lambda f, step, c, p=p_lev: calc_pressure_level(f, step, c, p, "temp"),
         "cmap": temp_cmap,
         "levels": temp_levels,
         "label": "°C",
         "ticks": [-60, -50, -40, -30, -20, -10, 0, 10, 20, 30],
-        "extend": "both"
+        "extend": "both",
+        "draw_grid": True
+    }
+    variables_config[f"rh_{p_lev}hpa"] = {
+        "title": f"Relativní vlhkost v {p_lev} hPa",
+        "get_data": lambda f, step, c, p=p_lev: calc_pressure_rh(f, step, c, p),
+        "cmap": rh_cmap,
+        "levels": rh_levels,
+        "label": "%",
+        "ticks": [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        "extend": "neither"
     }
 
 for var_name in variables_config.keys():
@@ -574,31 +1064,45 @@ def process_single_step(step):
     dt_valid = datetime_times[step]
     f_hour = int((dt_valid - dt_init).total_seconds() / 3600)
     
+    # Keš pro zamezení opakovaných readů z NetCDF
+    step_cache = {}
     local_max_cape = 0.0
 
+    # Vytvoření plátna pouze JEDNOU pro celý časový krok
+    fig = plt.figure(figsize=(10.128, 5.7), facecolor='#0f172a')
+    ax = fig.add_axes([0.02, 0.03, 0.82, 0.88], projection=cart_proj)
+    banner_ax = fig.add_axes([0.02, 0.92, 0.955, 0.06], facecolor='#1e293b')
+
     for var_key, cfg in variables_config.items():
-        data_field = cfg["get_data"](f_thread, step)
+        data_field = cfg["get_data"](f_thread, step, step_cache)
 
         if var_key == "cape":
             local_max_cape = float(np.nanmax(data_field))
 
-        fig = plt.figure(figsize=(10.128, 5.7), facecolor='#0f172a')
-        
-        ax = fig.add_axes([0.02, 0.03, 0.82, 0.88], projection=cart_proj)
+        # Čištění os
+        ax.cla()
+        banner_ax.cla()
+        banner_ax.axis('off')
+
+        # Vždy vytvoříme čistou osu colorbaru s plnou výškou (88 %)
+        if 'cbar_ax' in locals() and cbar_ax in fig.axes:
+            cbar_ax.remove()
+        cbar_ax = fig.add_axes([0.85, 0.03, 0.025, 0.88])
+
+        ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=cart_proj)
         ax.set_facecolor('#1e293b')
 
-        ax.add_feature(cfeature.BORDERS, linewidth=0.8, edgecolor='#94a3b8')
-        ax.add_feature(cfeature.COASTLINE, linewidth=0.8, edgecolor='#94a3b8')
+        # Vykreslení zrychlených předpřipravených geometrií
+        ax.add_geometries(STATES_GEOMS, crs=cart_proj, linewidth=0.5, edgecolor='#334155', facecolor='none', zorder=14)
+        ax.add_geometries(BORDERS_GEOMS, crs=cart_proj, linewidth=1.0, edgecolor='#020617', facecolor='none', zorder=15)
+        ax.add_geometries(COAST_GEOMS, crs=cart_proj, linewidth=1.0, edgecolor='#020617', facecolor='none', zorder=15)
 
         levels = cfg["levels"]
         cmap = cfg["cmap"]
-
         if isinstance(cmap, str):
             cmap = plt.get_cmap(cmap)
 
         norm = mcolors.BoundaryNorm(boundaries=levels, ncolors=cmap.N, clip=False)
-
-        # Načtení konkrétního nastavení extend pro pole (default "max")
         extend_mode = cfg.get("extend", "max")
 
         cf = ax.contourf(
@@ -609,36 +1113,37 @@ def process_single_step(step):
             transform=cart_proj,
             extend=extend_mode
         )
+        ax.autoscale(False)
 
         if var_key == "mslp":
             iso_levels = np.arange(940, 1060, 2)
             cs = ax.contour(lons, lats, data_field, levels=iso_levels, colors='#e2e8f0', linewidths=0.6, transform=cart_proj)
             ax.clabel(cs, inline=True, fontsize=8, fmt='%d hPa', colors='#ffffff')
 
-        cbar_ax = fig.add_axes([0.85, 0.03, 0.025, 0.88])
-        cbar = fig.colorbar(
-            cf, cax=cbar_ax,
-            ticks=cfg["ticks"],
-            spacing='uniform'
-        )
+        if "get_uv" in cfg:
+            try:
+                u_field, v_field = cfg["get_uv"](f_thread, step, step_cache)
+                draw_streamlines(ax, lons, lats, u_field, v_field, color='white', linewidth=0.8, density=1.2)
+            except Exception as e:
+                print(f"Chyba vykreslení proudnic u {var_key}: {e}")
+
+        if cfg.get("draw_grid", False):
+            draw_value_grid(ax, lons, lats, data_field, num_x=12, num_y=7, fmt="{:.0f}")
+
+        cbar = fig.colorbar(cf, cax=cbar_ax, ticks=cfg["ticks"], spacing='uniform')
         cbar.ax.tick_params(labelsize=9, colors='#f8fafc')
         cbar.set_label(cfg["label"], color='#f8fafc', fontsize=10, fontweight='bold')
 
-        banner_ax = fig.add_axes([0.02, 0.92, 0.955, 0.06], facecolor='#1e293b')
-        banner_ax.axis('off')
-
-        banner_ax.text(0.01, 0.5, "WRF ARW 3km", color='#38bdf8', fontsize=10, fontweight='bold', va='center')
-        banner_ax.text(0.14, 0.5, f"|  {cfg['title']}", color='#ffffff', fontsize=10, fontweight='bold', va='center')
+        banner_ax.text(0.01, 0.5, "WRF ARW", color='#38bdf8', fontsize=10, fontweight='bold', va='center')
+        banner_ax.text(0.12, 0.5, f"|  {cfg['title']}", color='#ffffff', fontsize=10, fontweight='bold', va='center')
 
         time_text = f"Init: {init_str} UTC  |  Valid: {time_str} UTC (+{f_hour:02d}h)"
         banner_ax.text(0.99, 0.5, time_text, color='#f1f5f9', fontsize=8.8, va='center', ha='right', family='monospace')
 
         out_file = output_dir / var_key / f"{step:03d}.webp"
         safe_savefig(fig, out_file)
-        plt.clf()
-        plt.close(fig)
 
-    plt.close('all')
+    plt.close(fig)
     print(f"Done [{step + 1}/{total_steps}]: {time_str}")
     return local_max_cape
 
@@ -646,8 +1151,8 @@ def process_single_step(step):
 # 5. SPUŠTĚNÍ A METADATA
 # ==========================================
 if __name__ == "__main__":
-    max_workers = min(8, os.cpu_count())
-    print(f"Start paralelního zpracování '{run_id}' na {max_workers} worker procesech...")
+    max_workers = min(12, os.cpu_count())
+    print(f"Start zrychleného paralelního zpracování '{run_id}' na {max_workers} worker procesech...")
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         cape_results = list(executor.map(process_single_step, range(total_steps)))

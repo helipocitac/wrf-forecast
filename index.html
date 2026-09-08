@@ -22,20 +22,27 @@
         .page-view { flex: 1; display: none; overflow: hidden; }
         .page-view.active { display: flex; }
 
-        /* SIDEBAR (Wider 300px + Pivotal Style Tabs) */
-        sidebar { width: 300px; background: #1e293b; border-right: 1px solid #334155; display: flex; flex-direction: column; flex-shrink: 0; }
+        /* ACCORDION SIDEBAR (300px Wide - Pivotal Weather Style) */
+        sidebar { width: 300px; background: #1e293b; border-right: 1px solid #334155; display: flex; flex-direction: column; flex-shrink: 0; overflow-y: auto; }
         
-        /* Category Selector Bar inside Sidebar */
-        .category-pills { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px; background: #0f172a; border-bottom: 1px solid #334155; }
-        .cat-pill { background: #1e293b; border: 1px solid #334155; color: #94a3b8; padding: 5px 9px; font-size: 11px; font-weight: 700; border-radius: 4px; cursor: pointer; text-transform: uppercase; letter-spacing: 0.03em; transition: all 0.15s; }
-        .cat-pill:hover { color: #fff; border-color: #475569; }
-        .cat-pill.active { background: #0284c7; color: #fff; border-color: #38bdf8; }
+        .acc-item { border-bottom: 1px solid #334155; }
+        
+        /* Category Header (Blue Banner) */
+        .acc-header { width: 100%; background: #0284c7; color: #ffffff; padding: 10px 14px; font-size: 13px; font-weight: 700; border: none; text-align: left; cursor: pointer; display: flex; align-items: center; justify-content: space-between; transition: background 0.15s; }
+        .acc-header:hover { background: #0369a1; }
+        .acc-header .arrow { font-size: 11px; transition: transform 0.2s; }
+        .acc-item.closed .acc-header .arrow { transform: rotate(-90deg); }
+        .acc-item.closed .acc-header { background: #1e293b; color: #38bdf8; }
+        .acc-item.closed .acc-header:hover { background: #334155; }
 
-        /* Variable Buttons List */
-        .variables-list { flex: 1; overflow-y: auto; padding: 8px 0; }
-        .var-btn { display: flex; align-items: center; justify-content: space-between; width: 100%; background: transparent; border: none; color: #cbd5e1; padding: 10px 16px; font-size: 13px; cursor: pointer; transition: all 0.15s; border-left: 3px solid transparent; }
-        .var-btn:hover { background: #334155; color: #fff; }
-        .var-btn.active { background: #0f172a; color: #38bdf8; font-weight: 700; border-left-color: #38bdf8; }
+        /* Category Items Container */
+        .acc-body { background: #0f172a; display: flex; flex-direction: column; }
+        .acc-item.closed .acc-body { display: none; }
+
+        /* Variable Buttons */
+        .var-btn { width: 100%; background: transparent; border: none; border-bottom: 1px solid #1e293b; color: #cbd5e1; padding: 9px 16px 9px 24px; font-size: 13px; text-align: left; cursor: pointer; transition: all 0.15s; }
+        .var-btn:hover { background: #1e293b; color: #fff; }
+        .var-btn.active { background: #1e293b; color: #38bdf8; font-weight: 700; border-left: 4px solid #38bdf8; }
 
         /* Map Viewer */
         .viewer-area { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #0f172a; padding: 12px; position: relative; }
@@ -83,10 +90,7 @@
 
 <!-- 1. CURRENT FORECAST PAGE -->
 <div class="page-view active" id="view-current">
-    <sidebar>
-        <div class="category-pills" id="category-pills"></div>
-        <div class="variables-list" id="variables-list"></div>
-    </sidebar>
+    <sidebar id="accordion-sidebar"></sidebar>
 
     <div class="viewer-area">
         <div class="map-wrapper">
@@ -121,7 +125,7 @@
         <div class="info-card">
             <h2>Model Configuration & System Info</h2>
             <p><strong>Model:</strong> Weather Research and Forecasting (WRF-ARW v4.x)</p>
-            <p><strong>Horizontal Resolution:</strong> 3 km grid spacing</p>
+            <p><strong>Horizontal Resolution:</strong> 2 km grid spacing</p>
             <p><strong>Output Frequency:</strong> 15-minute intervals</p>
             <p><strong>Microphysics:</strong> Thompson scheme</p>
             <br>
@@ -137,18 +141,43 @@
 
 <script>
     const fieldCategories = {
-        "Synoptika": { "temp": "Teplota 2m", "dewpoint": "Rosný bod", "mslp": "MSLP Tlak", "wind10m": "Vítr 10m", "sat_ir": "IR Satelit" },
+        "Povrch & Synoptika": { 
+            "temp": "Teplota 2m", 
+            "dewpoint": "Rosný bod", 
+            "rh2m": "Relativní vlhkost 2m", 
+            "pwat": "PWAT (Srážitelná voda)",
+            "cloud_cover": "Celková oblačnost",
+            "freezing_level": "Nulová izoterma (0°C)",
+            "mslp": "MSLP Tlak", 
+            "wind10m": "Vítr 10m", 
+            "sat_ir": "IR Satelit" 
+        },
+        "Oblačnost": {
+            "cloud_cover": "Celková oblačnost",
+            "cloud_cover_low": "Nízká oblačnost",
+            "cloud_cover_mid": "Střední oblačnost",
+            "cloud_cover_high": "Vysoká oblačnost"
+        },
         "Srážky": { "precip_total": "Celkové srážky", "precip_1h": "Srážky 1h", "precip_6h": "Srážky 6h", "precip_24h": "Srážky 24h" },
-        "Instabilita": { "cape": "MUCAPE", "cin": "MUCIN", "shear_0_1km": "Shear 0-1km", "shear_0_3km": "Shear 0-3km", "shear_0_6km": "Shear 0-6km" },
-        "Konvekce": { "radar_max": "Max dBZ", "radar_2km": "2km dBZ", "echotops_18": "Echo Tops 18", "echotops_45": "Echo Tops 45", "lightning": "Blesky (LPI)" },
+        "Sníh & Zima": { 
+            "snow_depth": "Sněhová pokrývka", 
+            "snow_acc_1h": "Nový sníh 1h", 
+            "snow_acc_6h": "Nový sníh 6h", 
+            "snow_acc_24h": "Nový sníh 24h", 
+            "snow_acc_total": "Nový sníh celkem" 
+        },
+        "Instabilita & Střih": { "cape": "MUCAPE", "sbcape": "SBCAPE","mlcape": "MLCAPE", "cin": "MUCIN",
+         "shear_0_1km": "Shear 0-1km", "shear_0_3km": "Shear 0-3km", "shear_0_6km": "Shear 0-6km", "lifted_index": "Lifted Index", "lapse_rate_700_500": "Lapse Rate (700-500)",},
+        "Radar & Konvekce": { "radar_max": "Max dBZ", "radar_2km": "2km dBZ", "echotops_18": "Echo Tops 18", "echotops_45": "Echo Tops 45", "lightning": "Blesky (LPI)" },
         "Výškový vítr": { "wind_925hpa": "Vítr 925 hPa", "wind_850hpa": "Vítr 850 hPa", "wind_700hpa": "Vítr 700 hPa", "wind_500hpa": "Vítr 500 hPa", "wind_400hpa": "Vítr 400 hPa", "wind_300hpa": "Vítr 300 hPa", "wind_200hpa": "Vítr 200 hPa" },
-        "Výšková teplota": { "temp_925hpa": "Teplota 925 hPa", "temp_850hpa": "Teplota 850 hPa", "temp_700hpa": "Teplota 700 hPa", "temp_500hpa": "Teplota 500 hPa", "temp_400hpa": "Teplota 400 hPa", "temp_300hpa": "Teplota 300 hPa", "temp_200hpa": "Teplota 200 hPa" }
+        "Výšková teplota": { "temp_925hpa": "Teplota 925 hPa", "temp_850hpa": "Teplota 850 hPa", "temp_700hpa": "Teplota 700 hPa", "temp_500hpa": "Teplota 500 hPa", "temp_400hpa": "Teplota 400 hPa", "temp_300hpa": "Teplota 300 hPa", "temp_200hpa": "Teplota 200 hPa" },
+        "Výšková vlhkost": { "rh_925hpa": "Vlhkost 925 hPa", "rh_850hpa": "Vlhkost 850 hPa", "rh_700hpa": "Vlhkost 700 hPa", "rh_500hpa": "Vlhkost 500 hPa", "rh_400hpa": "Vlhkost 400 hPa", "rh_300hpa": "Vlhkost 300 hPa", "rh_200hpa": "Vlhkost 200 hPa" }
     };
 
     let allRuns = [];
     let currentRun = null;
-    let activeCategory = "Konvekce";
     let activeField = "radar_max";
+    let openCategories = new Set(["Radar & Konvekce"]);
     let currentStep = 0;
     let isPlaying = false;
     let playInterval = null;
@@ -166,8 +195,7 @@
             console.error("Chyba při načítání runs.json:", e);
         }
 
-        renderCategoryPills();
-        renderVariablesList();
+        buildAccordionSidebar();
     }
 
     function loadRun(run) {
@@ -186,39 +214,48 @@
         document.getElementById(`view-${page}`).classList.add('active');
     }
 
-    function renderCategoryPills() {
-        const container = document.getElementById('category-pills');
-        container.innerHTML = '';
+    function buildAccordionSidebar() {
+        const sb = document.getElementById('accordion-sidebar');
+        sb.innerHTML = '';
 
-        for (const catName of Object.keys(fieldCategories)) {
-            const pill = document.createElement('button');
-            pill.className = `cat-pill ${catName === activeCategory ? 'active' : ''}`;
-            pill.innerText = catName;
-            pill.onclick = () => {
-                activeCategory = catName;
-                renderCategoryPills();
-                renderVariablesList();
+        for (const [catName, fields] of Object.entries(fieldCategories)) {
+            const item = document.createElement('div');
+            const isOpen = openCategories.has(catName);
+            item.className = `acc-item ${isOpen ? '' : 'closed'}`;
+
+            // Category Header Button
+            const header = document.createElement('button');
+            header.className = 'acc-header';
+            header.innerHTML = `<span>${catName}</span><span class="arrow">▼</span>`;
+            header.onclick = () => {
+                if (openCategories.has(catName)) {
+                    openCategories.delete(catName);
+                } else {
+                    openCategories.add(catName);
+                }
+                buildAccordionSidebar();
             };
-            container.appendChild(pill);
-        }
-    }
 
-    function renderVariablesList() {
-        const container = document.getElementById('variables-list');
-        container.innerHTML = '';
+            // Category Variables Body
+            const body = document.createElement('div');
+            body.className = 'acc-body';
 
-        const fields = fieldCategories[activeCategory] || {};
-        for (const [key, label] of Object.entries(fields)) {
-            const btn = document.createElement('button');
-            btn.className = `var-btn ${key === activeField ? 'active' : ''}`;
-            btn.innerHTML = `<span>${label}</span>`;
-            btn.onclick = () => {
-                document.querySelectorAll('.var-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                activeField = key;
-                updateMap();
-            };
-            container.appendChild(btn);
+            for (const [key, label] of Object.entries(fields)) {
+                const btn = document.createElement('button');
+                btn.className = `var-btn ${key === activeField ? 'active' : ''}`;
+                btn.innerText = label;
+                btn.onclick = () => {
+                    document.querySelectorAll('.var-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    activeField = key;
+                    updateMap();
+                };
+                body.appendChild(btn);
+            }
+
+            item.appendChild(header);
+            item.appendChild(body);
+            sb.appendChild(item);
         }
     }
 
