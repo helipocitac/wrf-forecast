@@ -158,7 +158,13 @@
             "cloud_cover_mid": "Střední oblačnost",
             "cloud_cover_high": "Vysoká oblačnost"
         },
-        "Srážky": { "precip_total": "Celkové srážky", "precip_1h": "Srážky 1h", "precip_6h": "Srážky 6h", "precip_24h": "Srážky 24h" },
+        "Srážky": { 
+            "precip_type": "Typ srážek",
+            "precip_total": "Celkové srážky", 
+            "precip_1h": "Srážky 1h", 
+            "precip_6h": "Srážky 6h", 
+            "precip_24h": "Srážky 24h" 
+        },
         "Sníh & Zima": { 
             "snow_depth": "Sněhová pokrývka", 
             "snow_acc_1h": "Nový sníh 1h", 
@@ -166,8 +172,20 @@
             "snow_acc_24h": "Nový sníh 24h", 
             "snow_acc_total": "Nový sníh celkem" 
         },
-        "Instabilita & Střih": { "cape": "MUCAPE", "sbcape": "SBCAPE","mlcape": "MLCAPE", "cin": "MUCIN",
-         "shear_0_1km": "Shear 0-1km", "shear_0_3km": "Shear 0-3km", "shear_0_6km": "Shear 0-6km", "lifted_index": "Lifted Index", "lapse_rate_700_500": "Lapse Rate (700-500)",},
+        "Instabilita & Střih": { 
+            "cape": "MUCAPE", 
+            "sbcape": "SBCAPE",
+            "mlcape": "MLCAPE", 
+            "cin": "MUCIN",
+            "ehi_01": "EHI 0-1km",
+            "scp": "Supercell Composite (SCP)",
+            "stp": "Significant Tornado (STP)",
+            "shear_0_1km": "Shear 0-1km", 
+            "shear_0_3km": "Shear 0-3km", 
+            "shear_0_6km": "Shear 0-6km", 
+            "lifted_index": "Lifted Index", 
+            "lapse_rate_700_500": "Lapse Rate (700-500)"
+        },
         "Radar & Konvekce": { "radar_max": "Max dBZ", "radar_2km": "2km dBZ", "echotops_18": "Echo Tops 18", "echotops_45": "Echo Tops 45", "lightning": "Blesky (LPI)" },
         "Výškový vítr": { "wind_925hpa": "Vítr 925 hPa", "wind_850hpa": "Vítr 850 hPa", "wind_700hpa": "Vítr 700 hPa", "wind_500hpa": "Vítr 500 hPa", "wind_400hpa": "Vítr 400 hPa", "wind_300hpa": "Vítr 300 hPa", "wind_200hpa": "Vítr 200 hPa" },
         "Výšková teplota": { "temp_925hpa": "Teplota 925 hPa", "temp_850hpa": "Teplota 850 hPa", "temp_700hpa": "Teplota 700 hPa", "temp_500hpa": "Teplota 500 hPa", "temp_400hpa": "Teplota 400 hPa", "temp_300hpa": "Teplota 300 hPa", "temp_200hpa": "Teplota 200 hPa" },
@@ -182,20 +200,38 @@
     let isPlaying = false;
     let playInterval = null;
 
+    // Keš pro přednačtené HTML Image objekty (0ms odezva při slidování)
+    const imageCache = new Map();
+
     async function init() {
         try {
             const res = await fetch('web_data/runs.json');
             allRuns = await res.json();
             
             if (allRuns.length > 0) {
+                buildAccordionSidebar();
                 loadRun(allRuns[0]);
                 renderArchiveLists();
             }
         } catch (e) {
             console.error("Chyba při načítání runs.json:", e);
         }
+    }
 
-        buildAccordionSidebar();
+    // Funkce pro přednačtení všech snímků aktivního pole do RAM
+    function preloadCurrentFieldImages() {
+        if (!currentRun || !activeField) return;
+
+        for (let step = 0; step < currentRun.total_steps; step++) {
+            const stepStr = String(step).padStart(3, '0');
+            const url = `web_data/${currentRun.run_id}/${activeField}/${stepStr}.webp`;
+
+            if (!imageCache.has(url)) {
+                const img = new Image();
+                img.src = url;
+                imageCache.set(url, img);
+            }
+        }
     }
 
     function loadRun(run) {
@@ -203,6 +239,8 @@
         currentStep = 0;
         document.getElementById('run-info').innerText = `Run: ${currentRun.run_id} (${currentRun.init_time} UTC)`;
         document.getElementById('time-slider').max = currentRun.total_steps - 1;
+        
+        preloadCurrentFieldImages();
         updateMap();
     }
 
@@ -228,12 +266,12 @@
             header.className = 'acc-header';
             header.innerHTML = `<span>${catName}</span><span class="arrow">▼</span>`;
             header.onclick = () => {
+                item.classList.toggle('closed');
                 if (openCategories.has(catName)) {
                     openCategories.delete(catName);
                 } else {
                     openCategories.add(catName);
                 }
-                buildAccordionSidebar();
             };
 
             // Category Variables Body
@@ -248,6 +286,7 @@
                     document.querySelectorAll('.var-btn').forEach(b => b.classList.remove('active'));
                     btn.classList.add('active');
                     activeField = key;
+                    preloadCurrentFieldImages(); // Přednačte snímky pro nově zvolenou proměnnou
                     updateMap();
                 };
                 body.appendChild(btn);
@@ -259,43 +298,12 @@
         }
     }
 
-    function renderArchiveLists() {
-        const pastList = document.getElementById('past-list');
-        const expList = document.getElementById('experimental-list');
-        pastList.innerHTML = '';
-        expList.innerHTML = '';
-
-        allRuns.forEach(run => {
-            const card = document.createElement('div');
-            card.className = 'archive-card';
-            card.innerHTML = `
-                <div>
-                    <div class="card-header">📅 ${run.init_time} – ${run.end_time} UTC</div>
-                    <div class="card-meta">Run ID: <span>${run.run_id}</span> | Steps: <span>${run.total_steps}</span></div>
-                </div>
-                <button class="btn-view" onclick="selectRun('${run.run_id}')">Open run 📁</button>
-            `;
-
-            if (run.run_id.includes('exp') || run.is_experimental) {
-                expList.appendChild(card);
-            } else {
-                pastList.appendChild(card);
-            }
-        });
-    }
-
-    function selectRun(runId) {
-        const run = allRuns.find(r => r.run_id === runId);
-        if (run) {
-            loadRun(run);
-            switchPage('current');
-        }
-    }
-
     function updateMap() {
         if (!currentRun) return;
         const stepStr = String(currentStep).padStart(3, '0');
-        document.getElementById('map-img').src = `web_data/${currentRun.run_id}/${activeField}/${stepStr}.webp`;
+        const imgUrl = `web_data/${currentRun.run_id}/${activeField}/${stepStr}.webp`;
+        
+        document.getElementById('map-img').src = imgUrl;
         document.getElementById('time-slider').value = currentStep;
         document.getElementById('time-val').innerText = currentRun.time_steps[currentStep];
     }
